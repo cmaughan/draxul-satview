@@ -10,11 +10,32 @@ ray-marched atmosphere. It is loaded into Draxul at runtime as the dynamic
 module `dev.draxul.satview` over Draxul's versioned C plugin ABI, rendering
 through Vulkan on Windows and Metal on macOS.
 
+![SatView Earth globe at the day/night terminator inside the live satellite catalog, with constellation boundaries and labels](screenshots/satview.png)
+
 ```text
 draxul tab create --space <space-id> --name SatView --plugin dev.draxul.satview --json
 ```
 
 The full product narrative lives in [docs/satview.md](docs/satview.md).
+
+## Gallery
+
+_Click any image to view full size._
+
+<table>
+<tr>
+<td align="center"><a href="screenshots/tracks.png"><img src="screenshots/tracks.png" width="400"/></a><br><em>Orbit tracks for the full 33,000-object merged catalog</em></td>
+<td align="center"><a href="screenshots/starlink.png"><img src="screenshots/starlink.png" width="400"/></a><br><em>Starlink constellation in the catalog tree (Windows)</em></td>
+</tr>
+<tr>
+<td align="center"><a href="screenshots/projection.png"><img src="screenshots/projection.png" width="400"/></a><br><em>Pannable 2D map projection with the live catalog (Windows)</em></td>
+<td align="center"><a href="screenshots/mars.png"><img src="screenshots/mars.png" width="400"/></a><br><em>Phobos POV over Mars (Windows)</em></td>
+</tr>
+<tr>
+<td align="center"><a href="screenshots/earth.png"><img src="screenshots/earth.png" width="400"/></a><br><em>Earth's night side with city lights</em></td>
+<td></td>
+</tr>
+</table>
 
 ## Facilities
 
