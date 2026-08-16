@@ -33,8 +33,8 @@
 #include <cstring>
 #include <draxul/config_document.h>
 #include <draxul/imgui_host.h>
+#include <draxul/imgui_input_bridge.h>
 #include <draxul/log.h>
-#include <draxul/sdl_imgui_input.h>
 #include <draxul/text_atlas_builder.h>
 #include <draxul/text_service.h>
 #include <draxul/unicode.h>
@@ -1027,19 +1027,10 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
     show_ui_panel_ = context.launch_options.show_ui_panels;
     continuous_refresh_enabled_ = context.launch_options.request_continuous_refresh;
     apply_config(config_document_ ? load_satview_config(*config_document_) : SatViewConfig{});
-    IMGUI_CHECKVERSION();
-    imgui_context_ = ImGui::CreateContext();
-    if (imgui_context_)
     {
-        ImGui::SetCurrentContext(imgui_context_);
-        ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-        io.ConfigFlags |= ImGuiConfigFlags_IsSRGB;
-        io.ConfigWindowsResizeFromEdges = true;
-        io.ConfigWindowsMoveFromTitleBarOnly = true;
-        io.IniFilename = nullptr;
-        io.LogFilename = nullptr;
-        ImGui::StyleColorsDark();
+        plugin_support::PluginImGuiContext::Options imgui_options;
+        imgui_options.windows_move_from_title_bar_only = true;
+        imgui_.create(imgui_options);
     }
     if (test_hooks_.active)
     {
@@ -1177,15 +1168,7 @@ void SatViewRuntime::shutdown()
     lunar_surface_catalog_.reset();
     mars_surface_catalog_.reset();
     app_text_service_ = nullptr;
-    if (imgui_context_)
-    {
-        ImGui::SetCurrentContext(imgui_context_);
-        if (imgui_backend_)
-            imgui_backend_->shutdown_imgui_backend();
-        ImGui::DestroyContext(imgui_context_);
-        imgui_context_ = nullptr;
-        imgui_backend_ = nullptr;
-    }
+    imgui_.destroy();
 }
 
 void SatViewRuntime::quiesce()
@@ -1211,7 +1194,7 @@ std::string SatViewRuntime::init_error() const
 void SatViewRuntime::set_viewport(const PluginRuntimeViewport& viewport)
 {
     viewport_ = viewport;
-    if (!show_ui_panel_ || !imgui_context_ || !imgui_backend_)
+    if (!show_ui_panel_ || !imgui_.active())
         scene_viewport_ = viewport_;
     request_redraw();
 }
@@ -1314,7 +1297,7 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
     const SatViewSimulationSnapshot* snapshot = snapshot_guard.get();
     const double simulation_seconds = snapshot ? render_simulation_seconds(*snapshot) : last_draw_simulation_seconds_;
     last_draw_simulation_seconds_ = simulation_seconds;
-    if (!show_ui_panel_ || !imgui_context_ || !imgui_backend_)
+    if (!show_ui_panel_ || !imgui_.active())
         scene_viewport_ = viewport_;
     render_host_imgui(last_imgui_delta_seconds_, snapshot);
     const bool map_projection = projection_mode_ == SatViewProjectionMode::Map;
@@ -1784,8 +1767,8 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
 
     frame.record_scene(*scene_pass_, scene_viewport_.pixel_pos.x,
         scene_viewport_.pixel_pos.y, pixel_w, pixel_h);
-    if (imgui_context_ && imgui_backend_)
-        frame.render_overlay(ImGui::GetDrawData(), imgui_context_);
+    if (imgui_.active())
+        frame.render_overlay(ImGui::GetDrawData(), imgui_.context());
     frame.finish();
 }
 
@@ -1800,26 +1783,9 @@ std::optional<std::chrono::steady_clock::time_point> SatViewRuntime::next_deadli
 
 void SatViewRuntime::on_mouse_button(const MouseButtonEvent& event)
 {
-    if (imgui_context_)
+    if (imgui_.context())
     {
-        ImGui::SetCurrentContext(imgui_context_);
-        int button = -1;
-        switch (event.button)
-        {
-        case 1:
-            button = 0;
-            break;
-        case 2:
-            button = 2;
-            break;
-        case 3:
-            button = 1;
-            break;
-        default:
-            break;
-        }
-        if (button >= 0)
-            ImGui::GetIO().AddMouseButtonEvent(button, event.pressed);
+        plugin_support::ImGuiInputBridge::route_mouse_button(imgui_.context(), event);
 
         const bool scene_input = dragging_
             || imgui_mouse_targets_scene(scene_viewport_, event.pos);
@@ -1887,10 +1853,9 @@ void SatViewRuntime::on_mouse_button(const MouseButtonEvent& event)
 
 void SatViewRuntime::on_mouse_move(const MouseMoveEvent& event)
 {
-    if (imgui_context_)
+    if (imgui_.context())
     {
-        ImGui::SetCurrentContext(imgui_context_);
-        ImGui::GetIO().AddMousePosEvent(static_cast<float>(event.pos.x), static_cast<float>(event.pos.y));
+        plugin_support::ImGuiInputBridge::route_mouse_move(imgui_.context(), event);
         const bool scene_input = dragging_
             || imgui_mouse_targets_scene(scene_viewport_, event.pos);
         if (!scene_input)
@@ -1954,10 +1919,9 @@ void SatViewRuntime::on_mouse_move(const MouseMoveEvent& event)
 
 void SatViewRuntime::on_mouse_wheel(const MouseWheelEvent& event)
 {
-    if (imgui_context_)
+    if (imgui_.context())
     {
-        ImGui::SetCurrentContext(imgui_context_);
-        ImGui::GetIO().AddMouseWheelEvent(event.delta.x, event.delta.y);
+        plugin_support::ImGuiInputBridge::route_mouse_wheel(imgui_.context(), event);
         if (!imgui_mouse_targets_scene(scene_viewport_, event.pos))
         {
             request_redraw();
@@ -1988,25 +1952,12 @@ void SatViewRuntime::on_mouse_wheel(const MouseWheelEvent& event)
 
 void SatViewRuntime::on_key(const KeyEvent& event)
 {
-    if (imgui_context_)
+    if (plugin_support::ImGuiInputBridge::route_key(imgui_.context(), event))
     {
-        ImGui::SetCurrentContext(imgui_context_);
-        ImGuiIO& io = ImGui::GetIO();
-        io.AddKeyEvent(ImGuiMod_Ctrl, (event.mod & kModCtrl) != 0);
-        io.AddKeyEvent(ImGuiMod_Shift, (event.mod & kModShift) != 0);
-        io.AddKeyEvent(ImGuiMod_Alt, (event.mod & kModAlt) != 0);
-        io.AddKeyEvent(ImGuiMod_Super, (event.mod & kModSuper) != 0);
-        const ImGuiKey key = sdl_scancode_to_imgui_key(event.scancode);
-        if (key != ImGuiKey_None)
-            io.AddKeyEvent(key, event.pressed);
-
-        if (io.WantCaptureKeyboard)
-        {
-            if (!event.pressed)
-                camera_keys_->on_key(event);
-            request_redraw();
-            return;
-        }
+        if (!event.pressed)
+            camera_keys_->on_key(event);
+        request_redraw();
+        return;
     }
 
     if (camera_keys_->on_key(event))
@@ -2070,13 +2021,7 @@ void SatViewRuntime::on_key(const KeyEvent& event)
 
 void SatViewRuntime::on_text_input(const TextInputEvent& event)
 {
-    if (!imgui_context_ || event.text.empty())
-        return;
-
-    ImGui::SetCurrentContext(imgui_context_);
-    ImGuiIO& io = ImGui::GetIO();
-    io.AddInputCharactersUTF8(event.text.c_str());
-    if (io.WantTextInput || io.WantCaptureKeyboard)
+    if (plugin_support::ImGuiInputBridge::route_text(imgui_.context(), event))
         request_redraw();
 }
 
@@ -2203,13 +2148,7 @@ PluginDebugState SatViewRuntime::debug_state() const
 
 void SatViewRuntime::attach_imgui_host(IImGuiHost& host)
 {
-    imgui_backend_ = &host;
-    if (!imgui_context_)
-        return;
-
-    ImGui::SetCurrentContext(imgui_context_);
-    host.initialize_imgui_backend();
-    host.rebuild_imgui_font_texture();
+    imgui_.attach_host(host);
 }
 
 void SatViewRuntime::set_imgui_font(const std::string& path, float size_pixels)
@@ -2220,18 +2159,7 @@ void SatViewRuntime::set_imgui_font(const std::string& path, float size_pixels)
     imgui_font_size_pixels_ = size_pixels;
     if (scene_font_changed)
         refresh_scene_text_service();
-    if (!imgui_context_)
-        return;
-
-    ImGui::SetCurrentContext(imgui_context_);
-    ImGuiIO& io = ImGui::GetIO();
-    io.Fonts->Clear();
-    if (!imgui_font_path_.empty() && imgui_font_size_pixels_ > 0.0f)
-        io.Fonts->AddFontFromFileTTF(imgui_font_path_.c_str(), imgui_font_size_pixels_);
-    if (io.Fonts->Fonts.empty())
-        io.Fonts->AddFontDefault();
-    if (imgui_backend_)
-        imgui_backend_->rebuild_imgui_font_texture();
+    imgui_.set_font(imgui_font_path_, imgui_font_size_pixels_);
 }
 
 void SatViewRuntime::on_font_metrics_changed()
@@ -3692,19 +3620,9 @@ void SatViewRuntime::render_scene_panel()
 
 void SatViewRuntime::render_host_imgui(float dt, const SatViewSimulationSnapshot* snapshot)
 {
-    if (!imgui_context_ || !imgui_backend_)
+    if (!imgui_.begin_frame(viewport_.pixel_pos.x, viewport_.pixel_pos.y,
+            viewport_.pixel_size.x, viewport_.pixel_size.y, dt))
         return;
-
-    ImGui::SetCurrentContext(imgui_context_);
-    imgui_backend_->begin_imgui_frame();
-    ImGuiIO& io = ImGui::GetIO();
-    const int pixel_w = std::max(1, viewport_.pixel_size.x);
-    const int pixel_h = std::max(1, viewport_.pixel_size.y);
-    io.DisplaySize = ImVec2(
-        static_cast<float>(viewport_.pixel_pos.x + pixel_w),
-        static_cast<float>(viewport_.pixel_pos.y + pixel_h));
-    io.DeltaTime = dt > 0.0f ? dt : (1.0f / 60.0f);
-    ImGui::NewFrame();
 
     render_dockspace(!show_ui_panel_);
     if (show_ui_panel_)

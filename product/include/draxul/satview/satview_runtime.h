@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <draxul/plugin_imgui_context.h>
 #include <draxul/plugin_runtime.h>
 #include <draxul/satview/satview_catalog_service.h>
 #include <draxul/satview/satview_config.h>
@@ -220,8 +221,7 @@ private:
     std::optional<std::int64_t> selected_norad_catalog_id_;
     std::optional<SelectedSurfaceObject> selected_surface_object_;
     std::optional<SatViewCameraPov> selected_natural_body_;
-    ImGuiContext* imgui_context_ = nullptr;
-    draxul::IImGuiHost* imgui_backend_ = nullptr;
+    plugin_support::PluginImGuiContext imgui_;
     std::string imgui_font_path_;
     float imgui_font_size_pixels_ = 13.0f;
     char search_buffer_[128]{};

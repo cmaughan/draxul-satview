@@ -92,13 +92,15 @@ add_library(draxul-satview-runtime STATIC
     src/runtime/satview_runtime.cpp
     src/runtime/satview_simulation_worker.cpp)
 target_include_directories(draxul-satview-runtime PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/runtime)
+# The plugin ImGui target is PUBLIC because satview_runtime.h owns a
+# PluginImGuiContext (the shared context/lifecycle from plugins/support/imgui).
 target_link_libraries(draxul-satview-runtime PUBLIC
     draxul-satview-core draxul-satview-scene draxul-satview-services
     draxul-satview-renderer Draxul::PluginSupport::Runtime
-    Draxul::PluginSupport::Render imgui)
+    Draxul::PluginSupport::Render Draxul::PluginSupport::ImGui imgui)
 target_link_libraries(draxul-satview-runtime PRIVATE
     Draxul::PluginSupport::Config Draxul::PluginSupport::Text
-    Draxul::PluginSupport::ImGui ${DRAXUL_SATVIEW_SDL_TARGET})
+    ${DRAXUL_SATVIEW_SDL_TARGET})
 
 add_library(draxul-satview-renderer-test-internals INTERFACE)
 target_include_directories(draxul-satview-renderer-test-internals INTERFACE src/render)
