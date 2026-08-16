@@ -1,18 +1,37 @@
+// Dual-backend C-ABI adapter for SatView: one TU compiled as C++ for Vulkan
+// and as Objective-C++ for Metal (see CMakeLists), replacing the former
+// satview_plugin_vk.cpp / satview_plugin_metal.mm twins. The adapter shell —
+// result factories, config parse, host services, pane-state persistence,
+// action registrar, and kApi assembly — comes from
+// Draxul::PluginSupport::Adapter. Where the twins had drifted, the guarded
+// variants won: the shared config parse never mixes iterators from two
+// literals (audit bug #9) and path lookups go through HostServices' bounded
+// reader.
+
+#include <draxul/plugin_adapter.h>
+#include <draxul/plugin_adapter_state.h>
 #include <draxul/plugin_api.h>
-#include <draxul/metal/metal_render_context.h>
+#include <draxul/plugin_host_services.h>
 #include <draxul/satview/satview_scene_pass.h>
 #include <draxul/satview/satview_runtime.h>
 #include <draxul/satview/satview_texture_assets.h>
 
 #include "satview_imgui_adapter.h"
 
+#if defined(__APPLE__)
+#include <draxul/metal/metal_render_context.h>
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#else
+#include <draxul/vulkan/vk_plugin_allocator.h>
+#include <draxul/vulkan/vk_render_context.h>
+#include <vulkan/vulkan.h>
+#include <vk_mem_alloc.h>
+#endif
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <cstring>
-#include <iterator>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -21,8 +40,11 @@
 namespace
 {
 
+using draxul::plugin_support::kFrameDelayNs;
+using draxul::plugin_support::render_result;
+using draxul::plugin_support::tick_result;
+
 constexpr const char* kSatViewPluginId = "dev.draxul.satview";
-constexpr uint64_t kFrameDelayNs = 16'666'667;
 
 class RuntimeCallbacks final
     : public draxul::satview::SatViewRuntimeCallbacks
@@ -41,8 +63,16 @@ public:
 
 struct SatViewPluginInstance
 {
+    explicit SatViewPluginInstance(const DraxulPluginCreateInfoV2& info)
+        : host(info.host)
+        , services(info)
+        , directory(services.plugin_directory())
+    {
+    }
+
     const DraxulPluginHostApiV2* host = nullptr;
-    std::string directory;
+    draxul::plugin_support::HostServices services;
+    std::filesystem::path directory;
     DraxulPluginViewportV2 viewport{};
     float speed = 1.0f;
     float angle = 0.0f;
@@ -53,82 +83,36 @@ struct SatViewPluginInstance
     bool focused = false;
     bool quiesced = false;
     bool remember_state = false;
-    bool paths_ready = false;
-    DraxulPluginPathServiceV2 paths{};
-    DraxulPluginStorageServiceV2 storage{};
-    bool has_storage = false;
     std::string storage_warning;
     std::string saved_config_toml;
-    std::string data_directory;
+    std::filesystem::path data_directory;
     std::string status;
     RuntimeCallbacks runtime_callbacks;
     std::unique_ptr<draxul::plugin_support::GpuImGuiHost> imgui_overlay;
     draxul::plugin_support::UiStyleClient ui_style;
     std::unique_ptr<draxul::satview::SatViewRuntime> runtime;
+#if !defined(__APPLE__)
+    VmaAllocator allocator = VK_NULL_HANDLE;
+#endif
 };
 
-DraxulPluginRenderResultV2 result(bool ok, uint64_t deadline,
-    const char* error = nullptr)
+void synchronize_ui_style(SatViewPluginInstance& instance)
 {
-    return { sizeof(DraxulPluginRenderResultV2), deadline,
-        ok ? 1 : 0, error };
-}
-
-DraxulPluginTickResultV2 tick_result(bool ok, uint64_t deadline,
-    bool redraw = false, const char* error = nullptr)
-{
-    return { sizeof(DraxulPluginTickResultV2), deadline,
-        redraw ? 1 : 0, ok ? 1 : 0, error };
-}
-
-std::string service_path(DraxulPluginPathServiceV2& service,
-    uint32_t kind)
-{
-    if (!service.get_path)
-        return {};
-    size_t required = 0;
-    if (!service.get_path(service.service_context, kind,
-            nullptr, &required)
-        || required == 0)
-        return {};
-    std::string result(required, '\0');
-    if (!service.get_path(service.service_context, kind,
-            result.data(), &required))
-        return {};
-    result.resize(required > 0 ? required - 1 : 0);
-    return result;
+    draxul::plugin_support::synchronize_ui_style(
+        instance.ui_style, instance.runtime.get());
 }
 
 void load_saved_state(SatViewPluginInstance* instance)
 {
-    if (!instance->remember_state || !instance->has_storage)
+    if (!instance->remember_state || !instance->services.has_storage())
         return;
-    constexpr std::string_view key = "state";
-    size_t required = 0;
-    const uint32_t first = instance->storage.read_json(
-        instance->storage.service_context, DRAXUL_PLUGIN_STORAGE_PANE,
-        key.data(), key.size(), nullptr, &required);
-    if (first == DRAXUL_PLUGIN_STORAGE_NOT_FOUND)
+    auto loaded = draxul::plugin_support::load_pane_state(instance->services);
+    instance->storage_warning = std::move(loaded.warning);
+    if (!loaded.state)
         return;
-    if (first != DRAXUL_PLUGIN_STORAGE_OK || required == 0)
-    {
-        instance->storage_warning = first == DRAXUL_PLUGIN_STORAGE_INVALID_JSON
-            ? "saved state is corrupt" : "saved state could not be read";
-        return;
-    }
-    std::string value(required, '\0');
-    const uint32_t second = instance->storage.read_json(
-        instance->storage.service_context, DRAXUL_PLUGIN_STORAGE_PANE,
-        key.data(), key.size(), value.data(), &required);
-    if (second != DRAXUL_PLUGIN_STORAGE_OK)
-    {
-        instance->storage_warning = "saved state could not be read";
-        return;
-    }
-    value.resize(required > 0 ? required - 1 : 0);
     try
     {
-        const auto state = nlohmann::json::parse(value);
+        const auto& state = *loaded.state;
         instance->paused = state.value("paused", instance->paused);
         const float direction = state.value("direction", instance->direction);
         instance->direction = direction < 0.0f ? -1.0f : 1.0f;
@@ -143,9 +127,8 @@ void load_saved_state(SatViewPluginInstance* instance)
 
 void save_state(SatViewPluginInstance* instance)
 {
-    if (!instance->remember_state || !instance->has_storage)
+    if (!instance->remember_state || !instance->services.has_storage())
         return;
-    constexpr std::string_view key = "state";
     nlohmann::json state{
         { "paused", instance->paused },
         { "direction", instance->direction },
@@ -156,104 +139,42 @@ void save_state(SatViewPluginInstance* instance)
             = draxul::satview::serialize_satview_config_toml(
                 instance->runtime->current_config());
     }
-    const std::string value = state.dump();
-    const uint32_t result = instance->storage.write_json(
-        instance->storage.service_context, DRAXUL_PLUGIN_STORAGE_PANE,
-        key.data(), key.size(), value.data(), value.size());
-    if (result == DRAXUL_PLUGIN_STORAGE_OK)
-        instance->storage_warning.clear();
-    else
-        instance->storage_warning = "saved state could not be written";
-}
-
-void log(SatViewPluginInstance* instance, uint32_t level,
-    const std::string& message)
-{
-    if (instance && instance->host && instance->host->log)
-    {
-        instance->host->log(instance->host->host_context,
-            level, message.data(), message.size());
-    }
-}
-
-void notify_presentation(SatViewPluginInstance* instance)
-{
-    if (instance && instance->host
-        && instance->host->notify_presentation_changed)
-    {
-        instance->host->notify_presentation_changed(
-            instance->host->host_context);
-    }
-}
-
-void request_tick(SatViewPluginInstance* instance)
-{
-    if (instance && instance->host && instance->host->request_tick)
-        instance->host->request_tick(instance->host->host_context);
-}
-
-void synchronize_ui_style(SatViewPluginInstance& instance)
-{
-    if (instance.runtime)
-    {
-        if (const auto font = instance.ui_style.poll())
-            instance.runtime->set_imgui_font(font->path, font->size_pixels);
-    }
+    instance->storage_warning
+        = draxul::plugin_support::save_pane_state(instance->services, state);
 }
 
 void* create_instance(const DraxulPluginCreateInfoV2* info)
 {
     if (!info || !info->host)
         return nullptr;
-    auto* instance = new SatViewPluginInstance;
-    instance->host = info->host;
-    instance->directory = info->plugin_directory_utf8
-        ? info->plugin_directory_utf8 : "";
-    draxul::satview::set_satview_asset_root(
-        std::filesystem::u8path(instance->directory) / "assets");
+    auto* instance = new SatViewPluginInstance(*info);
+    draxul::satview::set_satview_asset_root(instance->directory / "assets");
     instance->viewport = info->initial_viewport;
+    const auto config = draxul::plugin_support::parse_config_json(*info);
+    if (!config)
+    {
+        delete instance;
+        return nullptr;
+    }
     try
     {
-        const char* begin = info->config_json
-            ? info->config_json : "{}";
-        const char* end = info->config_json
-            ? info->config_json + info->config_json_length
-            : begin + 2;
-        const auto config = nlohmann::json::parse(begin, end);
-        instance->speed = config.value(
+        instance->speed = config->value(
             "speed_radians_per_second", 1.0f);
-        instance->angle = config.value("initial_angle", 0.0f);
-        instance->paused = config.value("paused", false);
-        instance->remember_state = config.value("remember_state", true);
+        instance->angle = config->value("initial_angle", 0.0f);
+        instance->paused = config->value("paused", false);
+        instance->remember_state = config->value("remember_state", true);
     }
     catch (...)
     {
         delete instance;
         return nullptr;
     }
-    if (instance->host->query_service)
-    {
-        instance->paths.struct_size = sizeof(instance->paths);
-        instance->paths.service_version = DRAXUL_PLUGIN_PATH_SERVICE_VERSION;
-        instance->paths_ready = instance->host->query_service(
-            instance->host->host_context, DRAXUL_PLUGIN_PATH_SERVICE_ID,
-            std::strlen(DRAXUL_PLUGIN_PATH_SERVICE_ID),
-            DRAXUL_PLUGIN_PATH_SERVICE_VERSION,
-            &instance->paths, sizeof(instance->paths)) != 0;
-        instance->storage.struct_size = sizeof(instance->storage);
-        instance->storage.service_version = DRAXUL_PLUGIN_STORAGE_SERVICE_VERSION;
-        instance->has_storage = instance->host->query_service(
-            instance->host->host_context, DRAXUL_PLUGIN_STORAGE_SERVICE_ID,
-            std::strlen(DRAXUL_PLUGIN_STORAGE_SERVICE_ID),
-            DRAXUL_PLUGIN_STORAGE_SERVICE_VERSION,
-            &instance->storage, sizeof(instance->storage)) != 0;
-        instance->ui_style.discover(*instance->host);
-    }
+    instance->ui_style.discover(*instance->host);
     instance->imgui_overlay
         = draxul::plugin_support::create_gpu_imgui_host();
-    if (instance->paths_ready)
-        instance->data_directory = service_path(
-            instance->paths, DRAXUL_PLUGIN_PATH_DATA);
+    if (instance->services.has_paths())
+        instance->data_directory
+            = instance->services.path(DRAXUL_PLUGIN_PATH_DATA);
     load_saved_state(instance);
     instance->runtime_callbacks.host = instance->host;
     instance->runtime = std::make_unique<draxul::satview::SatViewRuntime>();
@@ -265,14 +186,11 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
     context.initial_viewport.pixel_size = {
         info->initial_viewport.width, info->initial_viewport.height };
     context.initial_viewport.pixel_scale = info->initial_viewport.pixel_scale;
-    const std::filesystem::path cache_root = instance->paths_ready
-        ? std::filesystem::u8path(service_path(
-              instance->paths, DRAXUL_PLUGIN_PATH_CACHE))
-        : std::filesystem::path{};
+    const std::filesystem::path cache_root
+        = instance->services.path(DRAXUL_PLUGIN_PATH_CACHE);
     if (!instance->runtime->initialize(context,
             instance->runtime_callbacks,
-            std::filesystem::u8path(instance->directory) / "assets",
-            cache_root))
+            instance->directory / "assets", cache_root))
     {
         delete instance;
         return nullptr;
@@ -281,9 +199,10 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         instance->runtime->dispatch_action("satview_toggle_pause");
     if (!instance->saved_config_toml.empty())
     {
-        if (const auto config = draxul::satview::parse_satview_config_toml(
+        if (const auto config_toml
+            = draxul::satview::parse_satview_config_toml(
                 instance->saved_config_toml))
-            instance->runtime->apply_config(*config);
+            instance->runtime->apply_config(*config_toml);
         else
             instance->storage_warning = "saved SatView preferences are corrupt";
     }
@@ -296,8 +215,13 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
 void destroy_instance(void* opaque)
 {
     auto* instance = static_cast<SatViewPluginInstance*>(opaque);
-    if (instance && instance->runtime)
+    if (!instance)
+        return;
+    if (instance->runtime)
         instance->runtime->shutdown();
+#if !defined(__APPLE__)
+    draxul::plugin_support::destroy_allocator(instance->allocator);
+#endif
     delete instance;
 }
 
@@ -313,8 +237,7 @@ void quiesce_instance(void* opaque)
     }
 }
 
-void set_viewport(void* opaque,
-    const DraxulPluginViewportV2* viewport)
+void set_viewport(void* opaque, const DraxulPluginViewportV2* viewport)
 {
     if (!opaque || !viewport)
         return;
@@ -337,10 +260,10 @@ void set_visible(void* opaque, int32_t visible)
         return;
     instance->visible = visible != 0;
     instance->last_time = -1.0;
-    request_tick(instance);
-    if (instance->visible && instance->host->request_redraw)
-        instance->host->request_redraw(instance->host->host_context);
-    notify_presentation(instance);
+    instance->services.request_tick();
+    if (instance->visible)
+        instance->services.request_redraw();
+    instance->services.notify_presentation_changed();
 }
 
 void set_focused(void* opaque, int32_t focused)
@@ -349,7 +272,7 @@ void set_focused(void* opaque, int32_t focused)
     if (!instance)
         return;
     instance->focused = focused != 0;
-    notify_presentation(instance);
+    instance->services.notify_presentation_changed();
 }
 
 void toggle_pause(SatViewPluginInstance* instance,
@@ -360,10 +283,9 @@ void toggle_pause(SatViewPluginInstance* instance,
         instance->runtime->dispatch_action("satview_toggle_pause");
     instance->last_time = -1.0;
     save_state(instance);
-    request_tick(instance);
-    if (instance->host->request_redraw)
-        instance->host->request_redraw(instance->host->host_context);
-    notify_presentation(instance);
+    instance->services.request_tick();
+    instance->services.request_redraw();
+    instance->services.notify_presentation_changed();
 }
 
 int32_t handle_input(void* opaque,
@@ -418,7 +340,9 @@ int32_t handle_input(void* opaque,
     }
     if (event->kind == DRAXUL_PLUGIN_INPUT_KEY
         && event->pressed && event->logical_key == 32)
+    {
         toggle_pause(instance, true);
+    }
     return 1;
 }
 
@@ -451,25 +375,23 @@ DraxulPluginTickResultV2 tick(void* opaque,
     return tick_result(true, kFrameDelayNs, true);
 }
 
-DraxulPluginRenderResultV2 render_vulkan(void*,
-    const DraxulPluginVulkanFrameV2*)
-{
-    return result(false, DRAXUL_PLUGIN_NO_DEADLINE,
-        "Vulkan is not supported by this module build");
-}
+#if defined(__APPLE__)
 
 DraxulPluginRenderResultV2 render_metal(void* opaque,
     const DraxulPluginMetalFrameV2* frame)
 {
     auto* instance = static_cast<SatViewPluginInstance*>(opaque);
     if (!instance || !frame || !instance->visible)
-        return result(true, DRAXUL_PLUGIN_NO_DEADLINE);
+        return render_result(true, DRAXUL_PLUGIN_NO_DEADLINE);
     draxul::satview::plugin::DeferredOverlaySink sink(
         instance->imgui_overlay.get());
     if (instance->imgui_overlay)
         instance->imgui_overlay->set_metal_frame(frame);
     if (instance->runtime)
         instance->runtime->draw(sink);
+    if (!sink.scene_pass())
+        return render_result(false, DRAXUL_PLUGIN_NO_DEADLINE,
+            "SatView runtime did not provide its scene");
     id<MTLDevice> device
         = (__bridge id<MTLDevice>)frame->device;
     id<MTLCommandBuffer> command_buffer
@@ -479,9 +401,6 @@ DraxulPluginRenderResultV2 render_metal(void* opaque,
     MTLRenderPassDescriptor* descriptor
         = (__bridge MTLRenderPassDescriptor*)
             frame->continuation_render_pass_descriptor;
-    if (!sink.scene_pass())
-        return result(false, DRAXUL_PLUGIN_NO_DEADLINE,
-            "SatView runtime did not provide its scene");
     draxul::MetalRenderContext prepass_context(command_buffer, nil,
         frame->frame_index, frame->buffered_frame_count,
         frame->framebuffer_width, frame->framebuffer_height,
@@ -492,7 +411,7 @@ DraxulPluginRenderResultV2 render_metal(void* opaque,
     id<MTLRenderCommandEncoder> encoder
         = [command_buffer renderCommandEncoderWithDescriptor:descriptor];
     if (!encoder)
-        return result(false, DRAXUL_PLUGIN_NO_DEADLINE,
+        return render_result(false, DRAXUL_PLUGIN_NO_DEADLINE,
             "SatView could not create render encoder");
     draxul::MetalRenderContext scene_context(command_buffer, encoder,
         frame->frame_index, frame->buffered_frame_count,
@@ -503,8 +422,72 @@ DraxulPluginRenderResultV2 render_metal(void* opaque,
     sink.scene_pass()->record(scene_context);
     [encoder endEncoding];
     sink.render();
-    return result(true, DRAXUL_PLUGIN_NO_DEADLINE);
+    return render_result(true, DRAXUL_PLUGIN_NO_DEADLINE);
 }
+
+#else
+
+DraxulPluginRenderResultV2 render_vulkan(void* opaque,
+    const DraxulPluginVulkanFrameV2* frame)
+{
+    auto* instance = static_cast<SatViewPluginInstance*>(opaque);
+    if (!instance || !frame || !instance->visible)
+        return render_result(true, DRAXUL_PLUGIN_NO_DEADLINE);
+    draxul::satview::plugin::DeferredOverlaySink sink(
+        instance->imgui_overlay.get());
+    if (instance->imgui_overlay)
+        instance->imgui_overlay->set_vulkan_frame(frame);
+    if (instance->runtime)
+        instance->runtime->draw(sink);
+    static thread_local std::string error;
+    error.clear();
+    if (!sink.scene_pass())
+        return render_result(false, DRAXUL_PLUGIN_NO_DEADLINE,
+            "SatView runtime did not provide its scene");
+    if (!draxul::plugin_support::ensure_allocator(instance->allocator,
+            *frame, "SatView", error))
+    {
+        instance->services.log(DRAXUL_PLUGIN_LOG_ERROR, error);
+        return render_result(false, DRAXUL_PLUGIN_NO_DEADLINE,
+            error.c_str());
+    }
+    const auto command_buffer
+        = static_cast<VkCommandBuffer>(frame->command_buffer);
+    const auto render_pass = reinterpret_cast<VkRenderPass>(
+        static_cast<uintptr_t>(frame->continuation_render_pass));
+    draxul::VkRenderContext scene_context(command_buffer,
+        static_cast<VkPhysicalDevice>(frame->physical_device),
+        static_cast<VkDevice>(frame->device), instance->allocator,
+        render_pass, frame->frame_index, frame->buffered_frame_count,
+        frame->framebuffer_width, frame->framebuffer_height,
+        sink.scene_x(), sink.scene_y(),
+        std::max(1, sink.scene_width()), std::max(1, sink.scene_height()),
+        reinterpret_cast<VkImage>(static_cast<uintptr_t>(frame->target_image)),
+        reinterpret_cast<VkImageView>(static_cast<uintptr_t>(frame->target_image_view)),
+        static_cast<VkFormat>(frame->target_format),
+        static_cast<VkQueue>(frame->graphics_queue),
+        frame->graphics_queue_family,
+        static_cast<VkInstance>(frame->instance), render_pass,
+        reinterpret_cast<VkFramebuffer>(static_cast<uintptr_t>(frame->continuation_framebuffer)),
+        static_cast<VkFormat>(frame->depth_format), frame->target_generation);
+    sink.scene_pass()->record_prepass(scene_context);
+    VkRenderPassBeginInfo begin{
+        VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    begin.renderPass = render_pass;
+    begin.framebuffer = reinterpret_cast<VkFramebuffer>(
+        static_cast<uintptr_t>(frame->continuation_framebuffer));
+    begin.renderArea.extent = {
+        static_cast<uint32_t>(frame->framebuffer_width),
+        static_cast<uint32_t>(frame->framebuffer_height) };
+    vkCmdBeginRenderPass(command_buffer, &begin,
+        VK_SUBPASS_CONTENTS_INLINE);
+    sink.scene_pass()->record(scene_context);
+    vkCmdEndRenderPass(command_buffer);
+    sink.render();
+    return render_result(true, DRAXUL_PLUGIN_NO_DEADLINE);
+}
+
+#endif
 
 int32_t get_presentation_state(void* opaque,
     DraxulPluginPresentationStateV2* state)
@@ -520,9 +503,9 @@ int32_t get_presentation_state(void* opaque,
     if (instance->focused)
         instance->status += " | focused";
     if (instance->remember_state)
-        instance->status += instance->has_storage
+        instance->status += instance->services.has_storage()
             ? " | remembered" : " | storage unavailable";
-    if (instance->paths_ready && !instance->data_directory.empty())
+    if (instance->services.has_paths() && !instance->data_directory.empty())
         instance->status += " | paths ready";
     if (!instance->storage_warning.empty())
         instance->status += " | " + instance->storage_warning;
@@ -553,76 +536,45 @@ int32_t dispatch_action(void* opaque, const char* action,
         && instance->runtime->dispatch_action(value))
     {
         save_state(instance);
-        notify_presentation(instance);
+        instance->services.notify_presentation_changed();
     }
     else
         return 0;
     return 1;
 }
 
-constexpr std::string_view kActionIds[] = {
-    "toggle_ui_panels", "satview_toggle_pause", "satview_time_slower",
-    "satview_time_faster", "satview_reset_camera",
-    "satview_refresh_catalog", "satview_clear_selection" };
-constexpr std::string_view kActionNames[] = {
-    "Toggle Control Panels", "Toggle Pause", "Slower Time", "Faster Time",
-    "Reset Camera", "Refresh Catalog", "Clear Selection" };
-
-size_t action_count(void*)
-{
-    return std::size(kActionIds);
-}
-
-int32_t action_at(void*, size_t index,
-    DraxulPluginStringViewV2* action_id,
-    DraxulPluginStringViewV2* display_name)
-{
-    if (!action_id || !display_name || index >= std::size(kActionIds))
-        return 0;
-    *action_id = { kActionIds[index].data(), kActionIds[index].size() };
-    *display_name = {
-        kActionNames[index].data(), kActionNames[index].size() };
-    return 1;
-}
-
-int32_t query_extension(void*, const char* extension_id,
-    size_t extension_id_length, uint32_t requested_version,
-    void* extension_table, size_t extension_table_size)
-{
-    if (!extension_id || !extension_table
-        || std::string_view(extension_id, extension_id_length)
-            != DRAXUL_PLUGIN_PRESENTATION_EXTENSION_ID
-        || requested_version != DRAXUL_PLUGIN_PRESENTATION_EXTENSION_VERSION
-        || extension_table_size < sizeof(DraxulPluginPresentationExtensionV2))
-        return 0;
-    auto* extension = static_cast<DraxulPluginPresentationExtensionV2*>(
-        extension_table);
-    *extension = {
-        sizeof(*extension), DRAXUL_PLUGIN_PRESENTATION_EXTENSION_VERSION,
-        &get_presentation_state, &dispatch_action,
-        &action_count, &action_at };
-    return 1;
-}
-
-const DraxulPluginApiV2 kApi = {
-    .struct_size = sizeof(DraxulPluginApiV2),
-    .abi_version = DRAXUL_PLUGIN_ABI_VERSION,
-    .plugin_id = kSatViewPluginId,
-    .display_name = "SatView",
-    .plugin_version = "0.1.0",
-    .supported_backends = DRAXUL_PLUGIN_BACKEND_METAL,
-    .create_instance = &create_instance,
-    .quiesce_instance = &quiesce_instance,
-    .destroy_instance = &destroy_instance,
-    .set_viewport = &set_viewport,
-    .set_visible = &set_visible,
-    .set_focused = &set_focused,
-    .handle_input = &handle_input,
-    .tick = &tick,
-    .render_vulkan = &render_vulkan,
-    .render_metal = &render_metal,
-    .query_extension = &query_extension,
+constexpr draxul::plugin_support::AdapterAction kActions[] = {
+    { "toggle_ui_panels", "Toggle Control Panels" },
+    { "satview_toggle_pause", "Toggle Pause" },
+    { "satview_time_slower", "Slower Time" },
+    { "satview_time_faster", "Faster Time" },
+    { "satview_reset_camera", "Reset Camera" },
+    { "satview_refresh_catalog", "Refresh Catalog" },
+    { "satview_clear_selection", "Clear Selection" },
 };
+
+using Presentation = draxul::plugin_support::PresentationAdapter<kActions,
+    &get_presentation_state, &dispatch_action>;
+
+const DraxulPluginApiV2 kApi = draxul::plugin_support::make_plugin_api(
+    { kSatViewPluginId, "SatView", "0.1.0",
+        draxul::plugin_support::kNativeBackendMask },
+    {
+        .create_instance = &create_instance,
+        .quiesce_instance = &quiesce_instance,
+        .destroy_instance = &destroy_instance,
+        .set_viewport = &set_viewport,
+        .set_visible = &set_visible,
+        .set_focused = &set_focused,
+        .handle_input = &handle_input,
+        .tick = &tick,
+#if defined(__APPLE__)
+        .render_metal = &render_metal,
+#else
+        .render_vulkan = &render_vulkan,
+#endif
+        .query_extension = &Presentation::query_extension,
+    });
 
 } // namespace
 

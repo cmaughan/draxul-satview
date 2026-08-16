@@ -109,18 +109,20 @@ add_library(draxul-satview-runtime-test-internals INTERFACE)
 target_include_directories(draxul-satview-runtime-test-internals INTERFACE src/runtime)
 target_link_libraries(draxul-satview-runtime-test-internals INTERFACE draxul-satview-runtime)
 
-if(APPLE)
-    set(DRAXUL_SATVIEW_PLUGIN_SOURCE src/satview_plugin_metal.mm)
-else()
-    set(DRAXUL_SATVIEW_PLUGIN_SOURCE src/satview_plugin_vk.cpp)
-endif()
-add_library(draxul-satview-plugin MODULE ${DRAXUL_SATVIEW_PLUGIN_SOURCE})
+# One dual-backend adapter TU; on Apple it compiles as Objective-C++ for the
+# Metal render path (the MegaCity/ScoreView pattern).
+add_library(draxul-satview-plugin MODULE src/satview_plugin.cpp)
 target_include_directories(draxul-satview-plugin PRIVATE "${SATVIEW_INCLUDE_DIR}" src)
 target_link_libraries(draxul-satview-plugin PRIVATE
-    Draxul::PluginSDK Draxul::PluginSupport::ImGui
+    Draxul::PluginSDK Draxul::PluginSupport::Adapter
+    Draxul::PluginSupport::ImGui
     nlohmann_json::nlohmann_json draxul-satview-runtime)
-if(NOT APPLE)
+if(APPLE)
+    set_source_files_properties(src/satview_plugin.cpp
+        PROPERTIES LANGUAGE OBJCXX)
+else()
     target_link_libraries(draxul-satview-plugin PRIVATE
+        Draxul::PluginSupport::VulkanResources
         Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator)
 endif()
 set_target_properties(draxul-satview-plugin PROPERTIES PREFIX "" OUTPUT_NAME "draxul-satview")
