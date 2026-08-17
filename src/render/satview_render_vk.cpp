@@ -15,6 +15,7 @@
 #include <imgui.h>
 #include <limits>
 #include <vector>
+#include <draxul/vulkan/vk_hdr_scene_pipeline.h>
 #include <draxul/vulkan/vk_resource_helpers.h>
 
 namespace draxul::satview
@@ -42,104 +43,29 @@ struct BufferResource
     size_t size = 0;
 };
 
-struct TextureResource
-{
-    VkImage image = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-    VkSampler sampler = VK_NULL_HANDLE;
-    int width = 0;
-    int height = 0;
-};
+// Sampled textures, their samplers and the load-time staging upload all come
+// from the shared VulkanResources helpers now.
+using TextureResource = vkresources::SampledImageResource;
 
-struct AttachmentResource
-{
-    VkImage image = VK_NULL_HANDLE;
-    VmaAllocation allocation = VK_NULL_HANDLE;
-    VkImageView view = VK_NULL_HANDLE;
-};
-
-void destroy_attachment(VkDevice device, VmaAllocator allocator, AttachmentResource& attachment)
-{
-    if (attachment.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device, attachment.view, nullptr);
-    if (attachment.image != VK_NULL_HANDLE)
-        vmaDestroyImage(allocator, attachment.image, attachment.allocation);
-    attachment = {};
-}
+// Attachment creation, the per-format MSAA probe, and shader loading now live in
+// Draxul::PluginSupport::VulkanResources; SatView's copies were the canonical
+// ones and moved there wholesale. These aliases keep the local call sites short.
+using vkresources::AttachmentResource;
+using vkresources::destroy_attachment;
 
 bool create_attachment(VkDevice device, VmaAllocator allocator, int width, int height,
     VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect,
     VkSampleCountFlagBits samples, VkImageCreateFlags flags, VkImageLayout final_layout,
     const char* debug_name, AttachmentResource& attachment)
 {
-    VkImageCreateInfo image_ci{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-    image_ci.flags = flags;
-    image_ci.imageType = VK_IMAGE_TYPE_2D;
-    image_ci.format = format;
-    image_ci.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1u };
-    image_ci.mipLevels = 1;
-    image_ci.arrayLayers = 1;
-    image_ci.samples = samples;
-    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_ci.usage = usage;
-    image_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    vkresources::ScopedImage created_image;
     std::string error;
-    if (!vkresources::create_image(device, allocator,
-            vkresources::ImageRequest(image_ci, VK_IMAGE_VIEW_TYPE_2D, aspect,
-                vkresources::MemoryPolicy::DevicePreferred, final_layout, debug_name,
-                vkresources::LifetimeScope::Frame),
-            created_image, error))
-        return false;
-    const vkresources::ImageResource created = created_image.release();
-    attachment.image = created.image;
-    attachment.allocation = created.allocation;
-    attachment.view = created.view;
-    return true;
-}
-
-bool create_attachment_view(VkDevice device, VkImage image, VkFormat format,
-    VkImageAspectFlags aspect, VkImageView& view)
-{
-    VkImageSubresourceRange range{};
-    range.aspectMask = aspect;
-    range.levelCount = 1;
-    range.layerCount = 1;
-    std::string error;
-    return vkresources::create_image_view(device, image, format, VK_IMAGE_VIEW_TYPE_2D,
-        range, "satview.scene-final.unorm-view", view, error);
-}
-
-bool format_supports_samples(VkPhysicalDevice physical_device, VkFormat format,
-    VkImageUsageFlags usage, VkSampleCountFlagBits samples)
-{
-    VkImageFormatProperties properties{};
-    if (vkGetPhysicalDeviceImageFormatProperties(physical_device, format,
-            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, usage, 0, &properties)
-        != VK_SUCCESS)
-        return false;
-    return (properties.sampleCounts & samples) != 0;
-}
-
-VkSampleCountFlagBits choose_scene_sample_count(VkPhysicalDevice physical_device)
-{
-    constexpr std::array candidates = {
-        VK_SAMPLE_COUNT_4_BIT,
-        VK_SAMPLE_COUNT_2_BIT,
-        VK_SAMPLE_COUNT_1_BIT,
-    };
-    for (const VkSampleCountFlagBits samples : candidates)
-    {
-        if (format_supports_samples(physical_device, VK_FORMAT_R16G16B16A16_SFLOAT,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, samples)
-            && format_supports_samples(physical_device, VK_FORMAT_D32_SFLOAT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, samples))
-            return samples;
-    }
-    return VK_SAMPLE_COUNT_1_BIT;
+    if (vkresources::create_attachment(device, allocator,
+            vkresources::AttachmentRequest(width, height, format, usage, aspect, samples,
+                flags, final_layout, vkresources::LifetimeScope::Frame, debug_name),
+            attachment, error))
+        return true;
+    DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+    return false;
 }
 
 uint32_t sample_count_value(VkSampleCountFlagBits samples)
@@ -149,19 +75,7 @@ uint32_t sample_count_value(VkSampleCountFlagBits samples)
 
 VkShaderModule load_shader(VkDevice device, const std::string& path, bool required = true)
 {
-    std::string error;
-    const std::filesystem::path shader_path(path);
-    const std::string debug_name = "satview.shader." + shader_path.filename().string();
-    const VkShaderModule module = vkresources::load_shader_module(device, shader_path, debug_name, error);
-    if (module == VK_NULL_HANDLE)
-    {
-        if (required)
-            DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
-        else
-            DRAXUL_LOG_WARN(LogCategory::Renderer, "SatView: optional shader unavailable: %s", error.c_str());
-        return VK_NULL_HANDLE;
-    }
-    return module;
+    return vkresources::load_shader(device, std::filesystem::path(path), "SatView", required);
 }
 
 void destroy_buffer(VmaAllocator allocator, BufferResource& buffer)
@@ -173,44 +87,7 @@ void destroy_buffer(VmaAllocator allocator, BufferResource& buffer)
 
 void destroy_texture(VkDevice device, VmaAllocator allocator, TextureResource& texture)
 {
-    if (texture.sampler != VK_NULL_HANDLE)
-        vkDestroySampler(device, texture.sampler, nullptr);
-    if (texture.view != VK_NULL_HANDLE)
-        vkDestroyImageView(device, texture.view, nullptr);
-    if (texture.image != VK_NULL_HANDLE)
-        vmaDestroyImage(allocator, texture.image, texture.allocation);
-    texture = {};
-}
-
-bool create_staging_buffer(VkDevice device, VmaAllocator allocator, const LoadedTextureImage& image, BufferResource& buffer)
-{
-    PERF_MEASURE();
-    if (!image.valid())
-        return false;
-
-    const size_t byte_size = image.rgba.size();
-    vkresources::ScopedBuffer created_buffer;
-    std::string error;
-    if (!vkresources::create_buffer(device, allocator,
-            vkresources::BufferRequest(byte_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                vkresources::MemoryPolicy::HostSequentialWrite, "satview.texture-staging",
-                vkresources::LifetimeScope::Upload),
-            created_buffer, error))
-        return false;
-    const vkresources::BufferResource created = created_buffer.release();
-    buffer.buffer = created.buffer;
-    buffer.allocation = created.allocation;
-    buffer.mapped = created.mapped;
-    buffer.size = static_cast<size_t>(created.size);
-    if (!buffer.mapped)
-    {
-        destroy_buffer(allocator, buffer);
-        return false;
-    }
-
-    std::memcpy(buffer.mapped, image.rgba.data(), byte_size);
-    vmaFlushAllocation(allocator, buffer.allocation, 0, byte_size);
-    return true;
+    vkresources::destroy_sampled_image(device, allocator, texture);
 }
 
 bool create_texture_resource(VkPhysicalDevice physical_device, VkDevice device, VmaAllocator allocator,
@@ -219,108 +96,37 @@ bool create_texture_resource(VkPhysicalDevice physical_device, VkDevice device, 
     VkSamplerAddressMode address_mode = VK_SAMPLER_ADDRESS_MODE_REPEAT)
 {
     PERF_MEASURE();
-    VkImageCreateInfo image_ci{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-    image_ci.imageType = VK_IMAGE_TYPE_2D;
-    image_ci.format = format;
-    image_ci.extent = {
-        static_cast<uint32_t>(image.width),
-        static_cast<uint32_t>(image.height),
-        1u
-    };
-    image_ci.mipLevels = 1;
-    image_ci.arrayLayers = 1;
-    image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    image_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-    VmaAllocationCreateInfo alloc_ci{};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    if (vmaCreateImage(allocator, &image_ci, &alloc_ci, &texture.image, &texture.allocation, nullptr) != VK_SUCCESS)
+    if (!image.valid())
         return false;
-
-    VkImageViewCreateInfo view_ci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    view_ci.image = texture.image;
-    view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_ci.format = image_ci.format;
-    view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    view_ci.subresourceRange.levelCount = 1;
-    view_ci.subresourceRange.layerCount = 1;
-    if (vkCreateImageView(device, &view_ci, nullptr, &texture.view) != VK_SUCCESS)
-    {
-        destroy_texture(device, allocator, texture);
-        return false;
-    }
-
-    VkSamplerCreateInfo sampler_ci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sampler_ci.magFilter = VK_FILTER_LINEAR;
-    sampler_ci.minFilter = VK_FILTER_LINEAR;
-    sampler_ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_ci.addressModeU = address_mode;
-    sampler_ci.addressModeV = address_mode;
-    sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler_ci.maxLod = 0.0f;
-
-    VkPhysicalDeviceFeatures features{};
-    vkGetPhysicalDeviceFeatures(physical_device, &features);
-    if (features.samplerAnisotropy)
-    {
-        VkPhysicalDeviceProperties properties{};
-        vkGetPhysicalDeviceProperties(physical_device, &properties);
-        sampler_ci.anisotropyEnable = VK_TRUE;
-        sampler_ci.maxAnisotropy = std::min(8.0f, properties.limits.maxSamplerAnisotropy);
-    }
-
-    if (vkCreateSampler(device, &sampler_ci, nullptr, &texture.sampler) != VK_SUCCESS)
-    {
-        destroy_texture(device, allocator, texture);
-        return false;
-    }
-
-    texture.width = image.width;
-    texture.height = image.height;
-    return true;
+    std::string error;
+    if (vkresources::create_sampled_image(physical_device, device, allocator,
+            vkresources::SampledImageRequest(image.width, image.height, format, address_mode,
+                /*generate_mips=*/false, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                vkresources::LifetimeScope::Persistent, "satview.texture"),
+            texture, error))
+        return true;
+    DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+    return false;
 }
 
-void transition_texture(VkCommandBuffer cmd, VkImage image, VkImageLayout old_layout, VkImageLayout new_layout)
+bool upload_texture_immediate(const VkRenderContext& ctx, const LoadedTextureImage& image,
+    TextureResource& texture, VkImageLayout old_layout)
 {
-    VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    barrier.oldLayout = old_layout;
-    barrier.newLayout = new_layout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    PERF_MEASURE();
+    if (!image.valid() || texture.image == VK_NULL_HANDLE
+        || image.width != texture.width || image.height != texture.height)
+        return false;
 
-    VkPipelineStageFlags src_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    VkPipelineStageFlags dst_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-        && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-    {
-        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        src_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    }
-    else if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED
-        && new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
-    {
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    }
-    else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
-        && new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
-    {
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        src_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        dst_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    }
-
-    vkresources::transition_image(cmd, vkresources::ImageTransition{
-        image, old_layout, new_layout, barrier.srcAccessMask, barrier.dstAccessMask,
-        src_stage, dst_stage, barrier.subresourceRange });
+    const vkresources::ImmediateUploadContext upload{
+        ctx.physical_device(), ctx.device(), ctx.allocator(),
+        ctx.graphics_queue(), ctx.graphics_queue_family()
+    };
+    std::string error;
+    if (vkresources::upload_image_immediate(upload, image.rgba.data(), image.rgba.size(),
+            texture, old_layout, error))
+        return true;
+    DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+    return false;
 }
 
 bool upload_textures_immediate(const VkRenderContext& ctx,
@@ -328,180 +134,18 @@ bool upload_textures_immediate(const VkRenderContext& ctx,
     std::array<TextureResource, kEarthTextureCount>& textures)
 {
     PERF_MEASURE();
-    VkDevice device = ctx.device();
-    VmaAllocator allocator = ctx.allocator();
-    if (ctx.graphics_queue() == VK_NULL_HANDLE)
-        return false;
-
-    std::array<BufferResource, kEarthTextureCount> staging{};
     for (size_t index = 0; index < images.size(); ++index)
     {
-        if (!create_staging_buffer(device, allocator, images[index], staging[index])
-            || !create_texture_resource(ctx.physical_device(), device, allocator, images[index], textures[index]))
-        {
-            for (auto& buffer : staging)
-                destroy_buffer(allocator, buffer);
-            for (auto& texture : textures)
-                destroy_texture(device, allocator, texture);
-            return false;
-        }
-    }
-
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    VkCommandPoolCreateInfo pool_ci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-    pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_ci.queueFamilyIndex = ctx.graphics_queue_family();
-    if (vkCreateCommandPool(device, &pool_ci, nullptr, &command_pool) != VK_SUCCESS)
-    {
-        for (auto& buffer : staging)
-            destroy_buffer(allocator, buffer);
+        if (create_texture_resource(ctx.physical_device(), ctx.device(), ctx.allocator(),
+                images[index], textures[index])
+            && upload_texture_immediate(ctx, images[index], textures[index],
+                VK_IMAGE_LAYOUT_UNDEFINED))
+            continue;
         for (auto& texture : textures)
-            destroy_texture(device, allocator, texture);
-        return false;
-    }
-
-    VkCommandBuffer upload_cmd = VK_NULL_HANDLE;
-    VkCommandBufferAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    alloc_info.commandPool = command_pool;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(device, &alloc_info, &upload_cmd) != VK_SUCCESS)
-    {
-        vkDestroyCommandPool(device, command_pool, nullptr);
-        for (auto& buffer : staging)
-            destroy_buffer(allocator, buffer);
-        for (auto& texture : textures)
-            destroy_texture(device, allocator, texture);
-        return false;
-    }
-
-    VkCommandBufferBeginInfo begin_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(upload_cmd, &begin_info) != VK_SUCCESS)
-    {
-        vkDestroyCommandPool(device, command_pool, nullptr);
-        for (auto& buffer : staging)
-            destroy_buffer(allocator, buffer);
-        for (auto& texture : textures)
-            destroy_texture(device, allocator, texture);
-        return false;
-    }
-
-    for (size_t index = 0; index < textures.size(); ++index)
-    {
-        transition_texture(upload_cmd, textures[index].image,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-        VkBufferImageCopy copy{};
-        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = {
-            static_cast<uint32_t>(images[index].width),
-            static_cast<uint32_t>(images[index].height),
-            1u
-        };
-        vkCmdCopyBufferToImage(upload_cmd, staging[index].buffer, textures[index].image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-
-        transition_texture(upload_cmd, textures[index].image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    }
-
-    VkResult result = vkEndCommandBuffer(upload_cmd);
-    if (result == VK_SUCCESS)
-    {
-        VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &upload_cmd;
-        result = vkQueueSubmit(ctx.graphics_queue(), 1, &submit_info, VK_NULL_HANDLE);
-    }
-    if (result == VK_SUCCESS)
-        result = vkQueueWaitIdle(ctx.graphics_queue());
-
-    vkDestroyCommandPool(device, command_pool, nullptr);
-    for (auto& buffer : staging)
-        destroy_buffer(allocator, buffer);
-    if (result != VK_SUCCESS)
-    {
-        for (auto& texture : textures)
-            destroy_texture(device, allocator, texture);
+            destroy_texture(ctx.device(), ctx.allocator(), texture);
         return false;
     }
     return true;
-}
-
-bool upload_texture_immediate(const VkRenderContext& ctx,
-    const LoadedTextureImage& image,
-    TextureResource& texture,
-    VkImageLayout old_layout)
-{
-    PERF_MEASURE();
-    if (!image.valid() || texture.image == VK_NULL_HANDLE
-        || image.width != texture.width || image.height != texture.height
-        || ctx.graphics_queue() == VK_NULL_HANDLE)
-    {
-        return false;
-    }
-
-    VkDevice device = ctx.device();
-    VmaAllocator allocator = ctx.allocator();
-    BufferResource staging;
-    if (!create_staging_buffer(device, allocator, image, staging))
-        return false;
-
-    VkCommandPool command_pool = VK_NULL_HANDLE;
-    VkCommandPoolCreateInfo pool_ci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
-    pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_ci.queueFamilyIndex = ctx.graphics_queue_family();
-    if (vkCreateCommandPool(device, &pool_ci, nullptr, &command_pool) != VK_SUCCESS)
-    {
-        destroy_buffer(allocator, staging);
-        return false;
-    }
-
-    VkCommandBuffer upload_cmd = VK_NULL_HANDLE;
-    VkCommandBufferAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    alloc_info.commandPool = command_pool;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1;
-    VkResult result = vkAllocateCommandBuffers(device, &alloc_info, &upload_cmd);
-    if (result == VK_SUCCESS)
-    {
-        VkCommandBufferBeginInfo begin_info{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        result = vkBeginCommandBuffer(upload_cmd, &begin_info);
-    }
-    if (result == VK_SUCCESS)
-    {
-        transition_texture(upload_cmd, texture.image, old_layout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-
-        VkBufferImageCopy copy{};
-        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = {
-            static_cast<uint32_t>(image.width),
-            static_cast<uint32_t>(image.height),
-            1u
-        };
-        vkCmdCopyBufferToImage(upload_cmd, staging.buffer, texture.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        transition_texture(upload_cmd, texture.image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        result = vkEndCommandBuffer(upload_cmd);
-    }
-    if (result == VK_SUCCESS)
-    {
-        VkSubmitInfo submit_info{ VK_STRUCTURE_TYPE_SUBMIT_INFO };
-        submit_info.commandBufferCount = 1;
-        submit_info.pCommandBuffers = &upload_cmd;
-        result = vkQueueSubmit(ctx.graphics_queue(), 1, &submit_info, VK_NULL_HANDLE);
-    }
-    if (result == VK_SUCCESS)
-        result = vkQueueWaitIdle(ctx.graphics_queue());
-
-    vkDestroyCommandPool(device, command_pool, nullptr);
-    destroy_buffer(allocator, staging);
-    return result == VK_SUCCESS;
 }
 
 bool create_texture_immediate(
@@ -531,14 +175,11 @@ struct SatViewScenePass::State
 {
     struct HdrTargets
     {
-        AttachmentResource scene_msaa;
-        AttachmentResource scene_depth;
-        AttachmentResource scene_hdr;
-        AttachmentResource scene_final;
-        VkImageView scene_final_unorm_view = VK_NULL_HANDLE;
+        // The MSAA colour, depth, resolve and tone-mapped attachments plus their
+        // two framebuffers are the shared set; msaa_difference and its
+        // framebuffer are SatView's debug view and stay here.
+        vkresources::HdrSceneTargets shared;
         AttachmentResource msaa_difference;
-        VkFramebuffer scene_framebuffer = VK_NULL_HANDLE;
-        VkFramebuffer post_framebuffer = VK_NULL_HANDLE;
         VkFramebuffer debug_framebuffer = VK_NULL_HANDLE;
         VkDescriptorSet post_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet present_descriptor_set = VK_NULL_HANDLE;
@@ -546,15 +187,20 @@ struct SatViewScenePass::State
         VkDescriptorSet imgui_hdr_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet imgui_final_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet imgui_msaa_descriptor_set = VK_NULL_HANDLE;
-        int width = 0;
-        int height = 0;
         bool debug_ready = false;
+
+        [[nodiscard]] int width() const { return shared.width; }
+        [[nodiscard]] int height() const { return shared.height; }
     };
 
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     VkRenderPass render_pass = VK_NULL_HANDLE;
     VkRenderPass main_render_pass = VK_NULL_HANDLE;
+    // The MSAA scene pass, its MSAA-preserving twin and the tone-map pass are
+    // owned by the shared HDR pipeline; these stay as plain mirrors so the draw
+    // recording below is unchanged. debug_render_pass is SatView's own.
+    vkresources::HdrScenePipeline hdr_pipeline;
     VkRenderPass scene_render_pass = VK_NULL_HANDLE;
     VkRenderPass scene_debug_render_pass = VK_NULL_HANDLE;
     VkRenderPass post_render_pass = VK_NULL_HANDLE;
@@ -727,19 +373,11 @@ struct SatViewScenePass::State
                 if (targets.imgui_msaa_descriptor_set != VK_NULL_HANDLE)
                     ImGui_ImplVulkan_RemoveTexture(targets.imgui_msaa_descriptor_set);
             }
-            if (targets.scene_framebuffer != VK_NULL_HANDLE)
-                vkDestroyFramebuffer(device, targets.scene_framebuffer, nullptr);
-            if (targets.post_framebuffer != VK_NULL_HANDLE)
-                vkDestroyFramebuffer(device, targets.post_framebuffer, nullptr);
             if (targets.debug_framebuffer != VK_NULL_HANDLE)
                 vkDestroyFramebuffer(device, targets.debug_framebuffer, nullptr);
-            if (targets.scene_final_unorm_view != VK_NULL_HANDLE)
-                vkDestroyImageView(device, targets.scene_final_unorm_view, nullptr);
-            destroy_attachment(device, allocator, targets.scene_msaa);
-            destroy_attachment(device, allocator, targets.scene_depth);
-            destroy_attachment(device, allocator, targets.scene_hdr);
-            destroy_attachment(device, allocator, targets.scene_final);
+            targets.debug_framebuffer = VK_NULL_HANDLE;
             destroy_attachment(device, allocator, targets.msaa_difference);
+            vkresources::destroy_hdr_scene_targets(device, allocator, targets.shared);
         }
         hdr_targets.clear();
         if (hdr_descriptor_pool != VK_NULL_HANDLE)
@@ -768,12 +406,7 @@ struct SatViewScenePass::State
                 vkDestroyDescriptorSetLayout(device, debug_descriptor_set_layout, nullptr);
             if (hdr_sampler != VK_NULL_HANDLE)
                 vkDestroySampler(device, hdr_sampler, nullptr);
-            if (scene_render_pass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(device, scene_render_pass, nullptr);
-            if (scene_debug_render_pass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(device, scene_debug_render_pass, nullptr);
-            if (post_render_pass != VK_NULL_HANDLE)
-                vkDestroyRenderPass(device, post_render_pass, nullptr);
+            hdr_pipeline.destroy(device);
             if (debug_render_pass != VK_NULL_HANDLE)
                 vkDestroyRenderPass(device, debug_render_pass, nullptr);
         }
@@ -790,6 +423,7 @@ struct SatViewScenePass::State
         post_render_pass = VK_NULL_HANDLE;
         debug_render_pass = VK_NULL_HANDLE;
         main_render_pass = VK_NULL_HANDLE;
+        scene_sample_count = VK_SAMPLE_COUNT_1_BIT;
     }
 
     void destroy()
@@ -1248,140 +882,37 @@ struct SatViewScenePass::State
         return true;
     }
 
-    bool create_hdr_render_passes()
+    bool create_hdr_render_passes(VkPhysicalDevice physical_device)
     {
-        const bool multisampled = scene_sample_count != VK_SAMPLE_COUNT_1_BIT;
-        auto create_scene_pass = [&](bool preserve_msaa, VkRenderPass& result) {
-            std::array<VkAttachmentDescription, 3> attachments{};
-            uint32_t attachment_count = 0;
-            VkAttachmentReference color_ref{};
-            VkAttachmentReference depth_ref{};
-            VkAttachmentReference resolve_ref{};
-
-            attachments[0].format = VK_FORMAT_R16G16B16A16_SFLOAT;
-            attachments[0].samples = scene_sample_count;
-            attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachments[0].storeOp = multisampled
-                ? (preserve_msaa ? VK_ATTACHMENT_STORE_OP_STORE : VK_ATTACHMENT_STORE_OP_DONT_CARE)
-                : VK_ATTACHMENT_STORE_OP_STORE;
-            attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachments[0].finalLayout = multisampled
-                ? (preserve_msaa ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
-                : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            color_ref.attachment = 0;
-            color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            attachment_count = 1;
-
-            attachments[1].format = VK_FORMAT_D32_SFLOAT;
-            attachments[1].samples = scene_sample_count;
-            attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            depth_ref.attachment = 1;
-            depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-            attachment_count = 2;
-
-            if (multisampled)
-            {
-                attachments[2].format = VK_FORMAT_R16G16B16A16_SFLOAT;
-                attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
-                attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-                attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-                attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-                attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-                attachments[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                resolve_ref.attachment = 2;
-                resolve_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-                attachment_count = 3;
-            }
-
-            VkSubpassDescription subpass{};
-            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments = &color_ref;
-            subpass.pDepthStencilAttachment = &depth_ref;
-            subpass.pResolveAttachments = multisampled ? &resolve_ref : nullptr;
-
-            std::array<VkSubpassDependency, 2> dependencies{};
-            dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[0].dstSubpass = 0;
-            dependencies[0].srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-            dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
-                | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            dependencies[1].srcSubpass = 0;
-            dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            VkRenderPassCreateInfo ci{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-            ci.attachmentCount = attachment_count;
-            ci.pAttachments = attachments.data();
-            ci.subpassCount = 1;
-            ci.pSubpasses = &subpass;
-            ci.dependencyCount = static_cast<uint32_t>(dependencies.size());
-            ci.pDependencies = dependencies.data();
-            return vkCreateRenderPass(device, &ci, nullptr, &result) == VK_SUCCESS;
-        };
-
-        if (!create_scene_pass(false, scene_render_pass))
+        // The MSAA scene pass, its MSAA-preserving twin and the tone-map pass
+        // come from the shared HDR pipeline, which owns the one set of subpass
+        // dependency masks both products now use. SatView's MSAA-difference
+        // debug pass is its own, but uses the shared colour-pass masks.
+        std::string error;
+        vkresources::HdrScenePipelineConfig config;
+        config.color_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        config.depth_format = VK_FORMAT_D32_SFLOAT;
+        config.tone_mapped_format = VK_FORMAT_B8G8R8A8_SRGB;
+        config.tone_map_load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        config.want_msaa_preserving_pass = true;
+        config.debug_name = "SatView";
+        if (!hdr_pipeline.create(physical_device, device, config, error))
+        {
+            DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
             return false;
-        if (multisampled && !create_scene_pass(true, scene_debug_render_pass))
+        }
+        scene_sample_count = hdr_pipeline.sample_count();
+        scene_render_pass = hdr_pipeline.scene_render_pass();
+        scene_debug_render_pass = hdr_pipeline.scene_msaa_preserving_render_pass();
+        post_render_pass = hdr_pipeline.tone_map_render_pass();
+
+        if (!vkresources::create_color_render_pass(device, VK_FORMAT_R8G8B8A8_UNORM,
+                VK_ATTACHMENT_LOAD_OP_CLEAR, debug_render_pass, error))
+        {
+            DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
             return false;
-
-        auto create_color_pass = [&](VkFormat format, VkRenderPass& result) {
-            VkAttachmentDescription attachment{};
-            attachment.format = format;
-            attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-            attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-            attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-            attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            attachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-            VkAttachmentReference color_ref{};
-            color_ref.attachment = 0;
-            color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            VkSubpassDescription subpass{};
-            subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-            subpass.colorAttachmentCount = 1;
-            subpass.pColorAttachments = &color_ref;
-
-            std::array<VkSubpassDependency, 2> dependencies{};
-            dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[0].dstSubpass = 0;
-            dependencies[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependencies[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            dependencies[1].srcSubpass = 0;
-            dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-            dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-            dependencies[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            dependencies[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-            VkRenderPassCreateInfo ci{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-            ci.attachmentCount = 1;
-            ci.pAttachments = &attachment;
-            ci.subpassCount = 1;
-            ci.pSubpasses = &subpass;
-            ci.dependencyCount = static_cast<uint32_t>(dependencies.size());
-            ci.pDependencies = dependencies.data();
-            return vkCreateRenderPass(device, &ci, nullptr, &result) == VK_SUCCESS;
-        };
-        return create_color_pass(VK_FORMAT_B8G8R8A8_SRGB, post_render_pass)
-            && create_color_pass(VK_FORMAT_R8G8B8A8_UNORM, debug_render_pass);
+        }
+        return true;
     }
 
     bool create_hdr_layouts()
@@ -1433,6 +964,8 @@ struct SatViewScenePass::State
 
     bool create_hdr_pipelines()
     {
+        // Tone-map, present and MSAA-debug are all the same fullscreen-triangle
+        // state vector, which the shared helper now owns.
         const auto shader_dir = resolve_satview_asset_path("../shaders");
         VkShaderModule vert = load_shader(device, (shader_dir / "satview_post.vert.spv").string());
         VkShaderModule post_frag = load_shader(device, (shader_dir / "satview_post.frag.spv").string());
@@ -1440,9 +973,7 @@ struct SatViewScenePass::State
         VkShaderModule debug_frag = scene_sample_count == VK_SAMPLE_COUNT_1_BIT
             ? VK_NULL_HANDLE
             : load_shader(device, (shader_dir / "satview_msaa_debug.frag.spv").string());
-        if (vert == VK_NULL_HANDLE || post_frag == VK_NULL_HANDLE || present_frag == VK_NULL_HANDLE
-            || (scene_sample_count != VK_SAMPLE_COUNT_1_BIT && debug_frag == VK_NULL_HANDLE))
-        {
+        const auto destroy_modules = [&]() {
             if (vert != VK_NULL_HANDLE)
                 vkDestroyShaderModule(device, vert, nullptr);
             if (post_frag != VK_NULL_HANDLE)
@@ -1451,78 +982,40 @@ struct SatViewScenePass::State
                 vkDestroyShaderModule(device, present_frag, nullptr);
             if (debug_frag != VK_NULL_HANDLE)
                 vkDestroyShaderModule(device, debug_frag, nullptr);
+        };
+        if (vert == VK_NULL_HANDLE || post_frag == VK_NULL_HANDLE || present_frag == VK_NULL_HANDLE
+            || (scene_sample_count != VK_SAMPLE_COUNT_1_BIT && debug_frag == VK_NULL_HANDLE))
+        {
+            destroy_modules();
             return false;
         }
 
-        VkPipelineShaderStageCreateInfo stages[2]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vert;
-        stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].pName = "main";
-
-        VkPipelineVertexInputStateCreateInfo vertex_input{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-        VkPipelineInputAssemblyStateCreateInfo input_assembly{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-        input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineViewportStateCreateInfo viewport_state{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-        viewport_state.viewportCount = 1;
-        viewport_state.scissorCount = 1;
-        VkPipelineRasterizationStateCreateInfo raster{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        raster.polygonMode = VK_POLYGON_MODE_FILL;
-        raster.cullMode = VK_CULL_MODE_NONE;
-        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-        raster.lineWidth = 1.0f;
-        VkPipelineMultisampleStateCreateInfo multisample{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        VkPipelineDepthStencilStateCreateInfo depth{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-        depth.depthCompareOp = VK_COMPARE_OP_ALWAYS;
-        VkPipelineColorBlendAttachmentState blend_attachment{};
-        blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
-            | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        VkPipelineColorBlendStateCreateInfo blend{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-        blend.attachmentCount = 1;
-        blend.pAttachments = &blend_attachment;
-        std::array dynamic_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynamic{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-        dynamic.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
-        dynamic.pDynamicStates = dynamic_states.data();
-
-        auto create_pipeline = [&](VkShaderModule fragment, VkPipelineLayout pipeline_layout,
-                                   VkRenderPass pipeline_render_pass, VkPipeline& pipeline) {
-            stages[1].module = fragment;
-            VkGraphicsPipelineCreateInfo ci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-            ci.stageCount = 2;
-            ci.pStages = stages;
-            ci.pVertexInputState = &vertex_input;
-            ci.pInputAssemblyState = &input_assembly;
-            ci.pViewportState = &viewport_state;
-            ci.pRasterizationState = &raster;
-            ci.pMultisampleState = &multisample;
-            ci.pDepthStencilState = &depth;
-            ci.pColorBlendState = &blend;
-            ci.pDynamicState = &dynamic;
-            ci.layout = pipeline_layout;
-            ci.renderPass = pipeline_render_pass;
-            return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &ci, nullptr, &pipeline) == VK_SUCCESS;
+        std::string error;
+        const auto create = [&](VkShaderModule fragment, VkPipelineLayout pipeline_layout,
+                                VkRenderPass pipeline_render_pass, VkPipeline& pipeline) {
+            if (vkresources::create_fullscreen_pipeline(device,
+                    vkresources::FullscreenPipelineRequest(vert, fragment, pipeline_layout,
+                        pipeline_render_pass),
+                    pipeline, error))
+                return true;
+            DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+            return false;
         };
 
-        const bool result = create_pipeline(post_frag, post_pipeline_layout, post_render_pass, tone_map_pipeline)
-            && create_pipeline(present_frag, post_pipeline_layout, main_render_pass, present_pipeline)
+        const bool result = create(post_frag, post_pipeline_layout, post_render_pass, tone_map_pipeline)
+            && create(present_frag, post_pipeline_layout, main_render_pass, present_pipeline)
             && (scene_sample_count == VK_SAMPLE_COUNT_1_BIT
-                || create_pipeline(debug_frag, debug_pipeline_layout, debug_render_pass, msaa_debug_pipeline));
-        vkDestroyShaderModule(device, vert, nullptr);
-        vkDestroyShaderModule(device, post_frag, nullptr);
-        vkDestroyShaderModule(device, present_frag, nullptr);
-        if (debug_frag != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device, debug_frag, nullptr);
+                || create(debug_frag, debug_pipeline_layout, debug_render_pass, msaa_debug_pipeline));
+        destroy_modules();
         return result;
     }
 
     bool ensure_hdr_setup(const VkRenderContext& ctx)
     {
-        const VkSampleCountFlagBits selected_samples = choose_scene_sample_count(ctx.physical_device());
+        // The shared probe checks per-format sample support (audit bug #7), so
+        // the answer can differ from the old limits-only query on some devices.
+        const VkSampleCountFlagBits selected_samples = vkresources::choose_scene_sample_count(
+            ctx.physical_device(), VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_D32_SFLOAT);
         if (scene_render_pass != VK_NULL_HANDLE
             && tone_map_pipeline != VK_NULL_HANDLE
             && present_pipeline != VK_NULL_HANDLE
@@ -1535,9 +1028,8 @@ struct SatViewScenePass::State
         vkDeviceWaitIdle(device);
         destroy_pipelines();
         destroy_hdr_resources();
-        scene_sample_count = selected_samples;
         main_render_pass = ctx.render_pass();
-        if (!create_hdr_render_passes() || !create_hdr_layouts())
+        if (!create_hdr_render_passes(ctx.physical_device()) || !create_hdr_layouts())
         {
             DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: failed to create HDR render-pass resources");
             return false;
@@ -1547,7 +1039,6 @@ struct SatViewScenePass::State
             DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: failed to create HDR pipelines");
             return false;
         }
-        DRAXUL_LOG_INFO(LogCategory::Renderer, "SatView: HDR scene using %ux MSAA", sample_count_value(scene_sample_count));
         return true;
     }
 
@@ -1555,7 +1046,7 @@ struct SatViewScenePass::State
     {
         frame_count = std::max(1u, frame_count);
         if (hdr_targets.size() == frame_count && !hdr_targets.empty()
-            && hdr_targets.front().width == width && hdr_targets.front().height == height)
+            && hdr_targets.front().width() == width && hdr_targets.front().height() == height)
             return true;
 
         vkDeviceWaitIdle(device);
@@ -1572,75 +1063,34 @@ struct SatViewScenePass::State
         if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &hdr_descriptor_pool) != VK_SUCCESS)
             return false;
 
-        const bool multisampled = scene_sample_count != VK_SAMPLE_COUNT_1_BIT;
+        const bool multisampled = hdr_pipeline.multisampled();
         for (auto& targets : hdr_targets)
         {
-            if (multisampled
-                && !create_attachment(device, allocator, width, height,
-                    VK_FORMAT_R16G16B16A16_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, scene_sample_count, 0,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    "satview.hdr.scene-msaa", targets.scene_msaa))
+            // The MSAA colour / depth / resolve / tone-mapped attachments and
+            // their two framebuffers are the shared set. Only SatView's
+            // MSAA-difference debug target is built here.
+            std::string error;
+            if (!hdr_pipeline.create_targets(device, allocator, width, height, targets.shared, error))
+            {
+                DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
                 return false;
+            }
             if (!create_attachment(device, allocator, width, height,
-                    VK_FORMAT_D32_SFLOAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                    VK_IMAGE_ASPECT_DEPTH_BIT, scene_sample_count, 0,
-                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-                    "satview.hdr.scene-depth", targets.scene_depth)
-                || !create_attachment(device, allocator, width, height,
-                    VK_FORMAT_R16G16B16A16_SFLOAT,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 0,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    "satview.hdr.scene-resolve", targets.scene_hdr)
-                || !create_attachment(device, allocator, width, height,
-                    VK_FORMAT_B8G8R8A8_SRGB,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT,
-                    VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    "satview.hdr.scene-final", targets.scene_final)
-                || !create_attachment_view(device, targets.scene_final.image,
-                    VK_FORMAT_B8G8R8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
-                    targets.scene_final_unorm_view)
-                || !create_attachment(device, allocator, width, height,
                     VK_FORMAT_R8G8B8A8_UNORM,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 0,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    "satview.hdr.msaa-difference",
-                    targets.msaa_difference))
+                    "satview.hdr.msaa-difference", targets.msaa_difference))
                 return false;
 
-            std::array<VkImageView, 3> scene_views{};
-            uint32_t scene_view_count = 0;
-            scene_views[scene_view_count++] = multisampled ? targets.scene_msaa.view : targets.scene_hdr.view;
-            scene_views[scene_view_count++] = targets.scene_depth.view;
-            if (multisampled)
-                scene_views[scene_view_count++] = targets.scene_hdr.view;
-            VkFramebufferCreateInfo scene_fb_ci{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-            scene_fb_ci.renderPass = scene_render_pass;
-            scene_fb_ci.attachmentCount = scene_view_count;
-            scene_fb_ci.pAttachments = scene_views.data();
-            scene_fb_ci.width = static_cast<uint32_t>(width);
-            scene_fb_ci.height = static_cast<uint32_t>(height);
-            scene_fb_ci.layers = 1;
-            if (vkCreateFramebuffer(device, &scene_fb_ci, nullptr, &targets.scene_framebuffer) != VK_SUCCESS)
-                return false;
-
-            VkFramebufferCreateInfo color_fb_ci{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-            color_fb_ci.attachmentCount = 1;
-            color_fb_ci.width = static_cast<uint32_t>(width);
-            color_fb_ci.height = static_cast<uint32_t>(height);
-            color_fb_ci.layers = 1;
-            color_fb_ci.renderPass = post_render_pass;
-            color_fb_ci.pAttachments = &targets.scene_final.view;
-            if (vkCreateFramebuffer(device, &color_fb_ci, nullptr, &targets.post_framebuffer) != VK_SUCCESS)
-                return false;
-            color_fb_ci.renderPass = debug_render_pass;
-            color_fb_ci.pAttachments = &targets.msaa_difference.view;
-            if (vkCreateFramebuffer(device, &color_fb_ci, nullptr, &targets.debug_framebuffer) != VK_SUCCESS)
+            VkFramebufferCreateInfo debug_fb_ci{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+            debug_fb_ci.renderPass = debug_render_pass;
+            debug_fb_ci.attachmentCount = 1;
+            debug_fb_ci.pAttachments = &targets.msaa_difference.view;
+            debug_fb_ci.width = static_cast<uint32_t>(width);
+            debug_fb_ci.height = static_cast<uint32_t>(height);
+            debug_fb_ci.layers = 1;
+            if (vkCreateFramebuffer(device, &debug_fb_ci, nullptr, &targets.debug_framebuffer) != VK_SUCCESS)
                 return false;
 
             std::array<VkDescriptorSetLayout, 3> layouts = {
@@ -1660,9 +1110,9 @@ struct SatViewScenePass::State
             targets.debug_descriptor_set = multisampled ? sets[2] : VK_NULL_HANDLE;
 
             std::array<VkDescriptorImageInfo, 3> image_infos{};
-            image_infos[0] = { hdr_sampler, targets.scene_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            image_infos[1] = { hdr_sampler, targets.scene_final_unorm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            image_infos[2] = { hdr_sampler, targets.scene_msaa.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            image_infos[0] = { hdr_sampler, targets.shared.scene_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            image_infos[1] = { hdr_sampler, targets.shared.scene_final_unorm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            image_infos[2] = { hdr_sampler, targets.shared.scene_msaa.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             std::array<VkWriteDescriptorSet, 3> writes{};
             const uint32_t write_count = multisampled ? 3u : 2u;
             for (uint32_t i = 0; i < write_count; ++i)
@@ -1675,8 +1125,6 @@ struct SatViewScenePass::State
                 writes[i].pImageInfo = &image_infos[i];
             }
             vkUpdateDescriptorSets(device, write_count, writes.data(), 0, nullptr);
-            targets.width = width;
-            targets.height = height;
         }
         return true;
     }
@@ -2380,7 +1828,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     scene_begin.renderPass = hdr_debug_enabled_ && state_->scene_debug_render_pass != VK_NULL_HANDLE
         ? state_->scene_debug_render_pass
         : state_->scene_render_pass;
-    scene_begin.framebuffer = targets.scene_framebuffer;
+    scene_begin.framebuffer = targets.shared.scene_framebuffer;
     scene_begin.renderArea.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
     scene_begin.clearValueCount = static_cast<uint32_t>(scene_clear.size());
     scene_begin.pClearValues = scene_clear.data();
@@ -2798,7 +2246,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     post_clear.color = { { 0.0f, 0.0f, 0.0f, 1.0f } };
     VkRenderPassBeginInfo post_begin{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     post_begin.renderPass = state_->post_render_pass;
-    post_begin.framebuffer = targets.post_framebuffer;
+    post_begin.framebuffer = targets.shared.tone_map_framebuffer;
     post_begin.renderArea.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
     post_begin.clearValueCount = 1;
     post_begin.pClearValues = &post_clear;
@@ -2857,12 +2305,12 @@ void SatViewScenePass::render_hdr_debug_ui()
     if (targets.imgui_hdr_descriptor_set == VK_NULL_HANDLE)
     {
         targets.imgui_hdr_descriptor_set = ImGui_ImplVulkan_AddTexture(
-            state_->hdr_sampler, targets.scene_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            state_->hdr_sampler, targets.shared.scene_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     if (targets.imgui_final_descriptor_set == VK_NULL_HANDLE)
     {
         targets.imgui_final_descriptor_set = ImGui_ImplVulkan_AddTexture(
-            state_->hdr_sampler, targets.scene_final_unorm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            state_->hdr_sampler, targets.shared.scene_final_unorm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     if (targets.debug_ready && targets.imgui_msaa_descriptor_set == VK_NULL_HANDLE)
     {
@@ -2878,11 +2326,11 @@ void SatViewScenePass::render_hdr_debug_ui()
     const uint32_t samples = sample_count_value(state_->scene_sample_count);
     ImGui::Text("Requested: 4x  Active: %ux%s", samples, samples < 4 ? " (fallback)" : "");
     ImGui::Text("Size: %dx%d  Exposure: %.2f  White point: %.2f",
-        targets.width, targets.height, tone_map_exposure_, tone_map_white_point_);
+        targets.width(), targets.height(), tone_map_exposure_, tone_map_white_point_);
 
     const ImVec2 available = ImGui::GetContentRegionAvail();
-    const float aspect = targets.height > 0
-        ? static_cast<float>(targets.width) / static_cast<float>(targets.height)
+    const float aspect = targets.height() > 0
+        ? static_cast<float>(targets.width()) / static_cast<float>(targets.height())
         : 1.0f;
     const float width = std::max(64.0f, (available.x - ImGui::GetStyle().ItemSpacing.x) * 0.5f);
     const ImVec2 size(width, width / aspect);

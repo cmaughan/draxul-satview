@@ -1,5 +1,7 @@
 #include <draxul/satview/satview_runtime.h>
 
+#include <draxul/camera_input.h>
+
 #include "camera.h"
 #include "camera_manipulator.h"
 #include "satview_camera_key_state.h"
@@ -1000,7 +1002,7 @@ SatViewRuntime::SatViewRuntime()
     : cloud_service_(std::make_unique<SatViewCloudService>())
     , camera_(std::make_shared<Camera>())
     , camera_manipulator_(std::make_unique<Manipulator>(camera_))
-    , camera_keys_(std::make_unique<SatViewCameraKeyState>())
+    , camera_keys_(std::make_unique<camera_input::OrbitKeyState>(kSatViewCameraBindings))
 {
 }
 
@@ -1237,7 +1239,7 @@ void SatViewRuntime::pump()
     if (camera_keys_->movement_active())
     {
         const float input_dt = std::clamp(dt, 0.0f, kCameraInputMaxDeltaSeconds);
-        const SatViewCameraMovement movement = camera_keys_->movement();
+        const camera_input::OrbitMovement movement = camera_keys_->movement();
         if (projection_mode_ == SatViewProjectionMode::Map)
         {
             pan_map(glm::vec2(

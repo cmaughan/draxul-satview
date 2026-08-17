@@ -97,6 +97,7 @@ target_include_directories(draxul-satview-runtime PUBLIC "${SATVIEW_INCLUDE_DIR}
 target_link_libraries(draxul-satview-runtime PUBLIC
     draxul-satview-core draxul-satview-scene draxul-satview-services
     draxul-satview-renderer Draxul::PluginSupport::Runtime
+    Draxul::PluginSupport::CameraInput
     Draxul::PluginSupport::Render Draxul::PluginSupport::ImGui imgui)
 target_link_libraries(draxul-satview-runtime PRIVATE
     Draxul::PluginSupport::Config Draxul::PluginSupport::Text
@@ -127,6 +128,10 @@ else()
 endif()
 set_target_properties(draxul-satview-plugin PROPERTIES PREFIX "" OUTPUT_NAME "draxul-satview")
 
+# Shared GLSL/MSL includes owned by Draxul (currently the ACES tone-map curve,
+# which SatView and MegaCity used to carry a hand-synced copy of each).
+draxul_shared_shader_includes(SATVIEW_SHARED_SHADER_INCLUDE_DIR SATVIEW_SHARED_SHADER_INCLUDES)
+
 if(APPLE)
     target_link_libraries(draxul-satview-plugin PRIVATE "-framework Metal" "-framework Foundation")
     draxul_plugin_imgui_attach_metal_backend(draxul-satview-plugin SatView)
@@ -134,9 +139,11 @@ if(APPLE)
     set(SATVIEW_PLUGIN_METAL_AIR "${CMAKE_CURRENT_BINARY_DIR}/satview_scene.air")
     add_custom_command(
         OUTPUT "${SATVIEW_PLUGIN_METALLIB}"
-        COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/satview_scene.metal" -o "${SATVIEW_PLUGIN_METAL_AIR}"
+        COMMAND xcrun -sdk macosx metal -c "${CMAKE_CURRENT_SOURCE_DIR}/shaders/satview_scene.metal"
+            -I "${SATVIEW_SHARED_SHADER_INCLUDE_DIR}" -o "${SATVIEW_PLUGIN_METAL_AIR}"
         COMMAND xcrun -sdk macosx metallib "${SATVIEW_PLUGIN_METAL_AIR}" -o "${SATVIEW_PLUGIN_METALLIB}"
         DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/satview_scene.metal"
+            ${SATVIEW_SHARED_SHADER_INCLUDES}
         VERBATIM)
     add_custom_target(compile_satview_plugin_metal DEPENDS "${SATVIEW_PLUGIN_METALLIB}")
     add_dependencies(draxul-satview-plugin compile_satview_plugin_metal)
@@ -151,8 +158,10 @@ else()
         add_custom_command(
             OUTPUT "${SATVIEW_SHADER_OUTPUT}"
             COMMAND ${Vulkan_GLSLC_EXECUTABLE} -I "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+                -I "${SATVIEW_SHARED_SHADER_INCLUDE_DIR}"
                 "${SATVIEW_SHADER}" -o "${SATVIEW_SHADER_OUTPUT}"
             DEPENDS "${SATVIEW_SHADER}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/satview_sky_projection.glsl"
+                ${SATVIEW_SHARED_SHADER_INCLUDES}
             VERBATIM)
         list(APPEND SATVIEW_PLUGIN_SHADER_OUTPUTS "${SATVIEW_SHADER_OUTPUT}")
     endforeach()

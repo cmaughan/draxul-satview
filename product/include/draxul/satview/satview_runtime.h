@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <draxul/camera_input.h>
 #include <draxul/plugin_imgui_context.h>
 #include <draxul/plugin_runtime.h>
 #include <draxul/satview/satview_catalog_service.h>
@@ -29,7 +30,6 @@ namespace draxul::satview
 
 class SatViewScenePass;
 class SatViewSimulationWorker;
-class SatViewCameraKeyState;
 class SatViewCloudService;
 class Camera;
 class Manipulator;
@@ -299,7 +299,7 @@ private:
     std::uint64_t scene_text_atlas_revision_ = 0;
     std::shared_ptr<Camera> camera_;
     std::unique_ptr<Manipulator> camera_manipulator_;
-    std::unique_ptr<SatViewCameraKeyState> camera_keys_;
+    std::unique_ptr<camera_input::OrbitKeyState> camera_keys_;
     float time_speed_ = 60.0f;
     float ground_fov_degrees_ = 60.0f;
     float ground_marker_scale_ = 0.1f;

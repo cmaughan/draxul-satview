@@ -6,7 +6,8 @@
 using draxul::KeyEvent;
 using draxul::kModCtrl;
 using draxul::kModNone;
-using draxul::satview::SatViewCameraKeyState;
+using draxul::camera_input::OrbitKeyState;
+using draxul::satview::kSatViewCameraBindings;
 
 namespace
 {
@@ -20,7 +21,7 @@ KeyEvent key_event(int scancode, int keycode, bool pressed, draxul::ModifierFlag
 
 TEST_CASE("SatView camera accepts MegaCity orbit key alternatives", "[satview][input]")
 {
-    SatViewCameraKeyState input;
+    OrbitKeyState input(kSatViewCameraBindings);
 
     CHECK(input.on_key(key_event(SDL_SCANCODE_A, SDLK_A, true)));
     CHECK(input.movement().orbit.x == 1.0f);
@@ -39,7 +40,7 @@ TEST_CASE("SatView camera accepts MegaCity orbit key alternatives", "[satview][i
 
 TEST_CASE("SatView camera uses R and F for dolly while reserving Ctrl R", "[satview][input]")
 {
-    SatViewCameraKeyState input;
+    OrbitKeyState input(kSatViewCameraBindings);
 
     CHECK(input.on_key(key_event(SDL_SCANCODE_R, SDLK_R, true)));
     CHECK(input.movement().zoom == -1.0f);
