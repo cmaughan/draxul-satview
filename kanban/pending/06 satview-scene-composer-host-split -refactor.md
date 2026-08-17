@@ -18,8 +18,8 @@ view/selection and ImGui responsibilities inside the host target, leaving
 - [ ] Inventory existing scene POD contracts and renderer consumption on Vulkan/Metal.
 - [ ] Record dirty-buffer revisions, generation checks, visible-radius, and selection invariants.
 - [ ] Record offline fixture seams for fake clock, transport, renderer, and callbacks.
-- [ ] Confirm the proposal is narrower than
-  `kanban/done/26 satview-library-boundaries -refactor.md`.
+- [ ] Confirm the proposal is narrower than the delivered SatView library-boundary
+  refactor retained in repository history.
 
 ## Implementation and migration
 
@@ -63,7 +63,7 @@ view/selection and ImGui responsibilities inside the host target, leaving
 
 ## Dependencies and ownership
 
-Depends on `kanban/pending/00 internal-target-build-policy -refactor.md`. One
-SatView owner freezes request/result and state ownership. Composer tests and panel
+Depends on the core repository's internal-target build-policy work. One SatView
+owner freezes request/result and state ownership. Composer tests and panel
 TU moves may then be independent; renderer backend files remain single-owner and
 out of scope.
