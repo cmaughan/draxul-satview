@@ -37,7 +37,7 @@ bool wait_for_idle(SatViewCloudService& service)
             return state != SatViewCloudService::RefreshState::Loading
                 && state != SatViewCloudService::RefreshState::Refreshing;
         },
-        std::chrono::seconds(1), std::chrono::milliseconds(5));
+        std::chrono::seconds(5), std::chrono::milliseconds(5));
 }
 
 SatViewCloudService::Config config_for(

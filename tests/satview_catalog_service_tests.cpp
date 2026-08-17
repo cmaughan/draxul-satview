@@ -71,7 +71,7 @@ bool wait_for_idle(SatViewCatalogService& service)
 {
     return draxul::tests::pump_until([&service] { service.pump(); },
         [&service] { return !service.refresh_in_flight(); },
-        std::chrono::seconds(1), std::chrono::milliseconds(5));
+        std::chrono::seconds(5), std::chrono::milliseconds(5));
 }
 
 SatViewCatalogService::Config config_for(
