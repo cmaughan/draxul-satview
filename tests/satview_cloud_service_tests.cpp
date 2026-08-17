@@ -1,11 +1,11 @@
 #include "temp_dir.h"
+#include "test_support.h"
 #include <draxul/satview/satview_cloud_service.h>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <string>
-#include <thread>
 #include <utility>
 
 using draxul::satview::SatViewCloudService;
@@ -30,18 +30,14 @@ std::string tiny_cloud_ppm()
 
 bool wait_for_idle(SatViewCloudService& service)
 {
-    for (int i = 0; i < 200; ++i)
-    {
-        service.pump();
-        const auto state = service.status().refresh_state;
-        if (state != SatViewCloudService::RefreshState::Loading
-            && state != SatViewCloudService::RefreshState::Refreshing)
-        {
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return false;
+    return draxul::tests::pump_until(
+        [&service] { service.pump(); },
+        [&service] {
+            const auto state = service.status().refresh_state;
+            return state != SatViewCloudService::RefreshState::Loading
+                && state != SatViewCloudService::RefreshState::Refreshing;
+        },
+        std::chrono::seconds(1), std::chrono::milliseconds(5));
 }
 
 SatViewCloudService::Config config_for(

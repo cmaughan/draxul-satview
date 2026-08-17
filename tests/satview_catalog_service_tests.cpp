@@ -1,4 +1,5 @@
 #include "temp_dir.h"
+#include "test_support.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <draxul/satview/satview_catalog_service.h>
@@ -6,7 +7,6 @@
 #include <chrono>
 #include <filesystem>
 #include <string>
-#include <thread>
 #include <utility>
 
 using draxul::satview::SatViewCatalogService;
@@ -69,14 +69,9 @@ const char* kTwoObjectSatcat =
 
 bool wait_for_idle(SatViewCatalogService& service)
 {
-    for (int i = 0; i < 200; ++i)
-    {
-        service.pump();
-        if (!service.refresh_in_flight())
-            return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-    return false;
+    return draxul::tests::pump_until([&service] { service.pump(); },
+        [&service] { return !service.refresh_in_flight(); },
+        std::chrono::seconds(1), std::chrono::milliseconds(5));
 }
 
 SatViewCatalogService::Config config_for(
