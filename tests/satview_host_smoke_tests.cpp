@@ -17,6 +17,7 @@
 #include "home_dir_redirect.h"
 #include "satview_host_fixture.h"
 #include "temp_dir.h"
+#include "test_support.h"
 
 #include <draxul/config_document.h>
 #include <draxul/host.h>
@@ -110,6 +111,25 @@ TEST_CASE("SatView host initializes, draws, and shuts down offline", "[satview][
     offline.host.shutdown();
     CHECK_FALSE(offline.host.is_running());
     CHECK_FALSE(SatViewHostTestAccess::running(offline.host));
+}
+
+TEST_CASE("SatView dynamic plugin font builds constellation labels without an app text service",
+    "[satview][host][labels]")
+{
+    OfflineSatViewHost offline;
+    REQUIRE(offline.initialize());
+    REQUIRE_FALSE(SatViewHostTestAccess::scene_text_atlas_ready(offline.host));
+
+    offline.host.set_imgui_font(tests::bundled_font_path().string(), 16.0f);
+    REQUIRE(SatViewHostTestAccess::scene_text_atlas_ready(offline.host));
+
+    SatViewConfig config = SatViewHostTestAccess::current_config(offline.host);
+    config.projection_mode = SatViewProjectionMode::Globe;
+    config.constellation_labels_enabled = true;
+    SatViewHostTestAccess::apply_config(offline.host, config);
+    offline.draw_once();
+
+    CHECK(SatViewHostTestAccess::constellation_label_count(offline.host) > 0u);
 }
 
 TEST_CASE("SatView host applies and reads back durable config in memory", "[satview][host][config]")

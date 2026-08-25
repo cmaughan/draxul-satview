@@ -1024,6 +1024,8 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
     app_text_service_ = context.text_service;
     display_ppi_ = context.display_ppi;
     scene_font_path_ = app_text_service_ ? app_text_service_->primary_font_path() : std::string{};
+    scene_font_point_size_ = app_text_service_
+        ? app_text_service_->point_size() : TextService::DEFAULT_POINT_SIZE;
     viewport_ = context.initial_viewport;
     scene_viewport_ = viewport_;
     show_ui_panel_ = context.launch_options.show_ui_panels;
@@ -2155,8 +2157,14 @@ void SatViewRuntime::attach_imgui_host(IImGuiHost& host)
 
 void SatViewRuntime::set_imgui_font(const std::string& path, float size_pixels)
 {
-    const bool scene_font_changed = scene_font_path_ != path;
+    const float point_size = std::clamp(
+        size_pixels * 72.0f / std::max(display_ppi_, 1.0f),
+        TextService::MIN_POINT_SIZE,
+        TextService::MAX_POINT_SIZE);
+    const bool scene_font_changed = scene_font_path_ != path
+        || std::abs(scene_font_point_size_ - point_size) > 0.01f;
     scene_font_path_ = path;
+    scene_font_point_size_ = point_size;
     imgui_font_path_ = path;
     imgui_font_size_pixels_ = size_pixels;
     if (scene_font_changed)
@@ -2682,7 +2690,7 @@ void SatViewRuntime::update_constellation_line_styles()
 void SatViewRuntime::refresh_scene_text_service()
 {
     scene_text_atlas_.reset();
-    if (!app_text_service_ || scene_font_path_.empty())
+    if (scene_font_path_.empty())
     {
         scene_text_service_.reset();
         return;
@@ -2697,7 +2705,7 @@ void SatViewRuntime::refresh_scene_text_service()
     config.enable_ligatures = false;
     if (!scene_text_service_->initialize(
             config,
-            app_text_service_->point_size(),
+            scene_font_point_size_,
             display_ppi_))
     {
         DRAXUL_LOG_WARN(LogCategory::App,

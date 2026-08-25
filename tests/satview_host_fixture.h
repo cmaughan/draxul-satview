@@ -100,6 +100,14 @@ public:
     {
         return static_cast<bool>(host.scene_pass_);
     }
+    static bool scene_text_atlas_ready(const SatViewHost& host)
+    {
+        return host.scene_text_atlas_ && host.scene_text_atlas_->image.valid();
+    }
+    static std::size_t constellation_label_count(const SatViewHost& host)
+    {
+        return host.constellation_label_instances_.size();
+    }
     static double simulated_seconds(const SatViewHost& host)
     {
         return host.simulated_seconds_;

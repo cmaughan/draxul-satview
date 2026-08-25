@@ -295,6 +295,7 @@ private:
     std::unique_ptr<draxul::TextService> scene_text_service_;
     std::shared_ptr<draxul::TextAtlas> scene_text_atlas_;
     std::string scene_font_path_;
+    float scene_font_point_size_ = 11.0f;
     float display_ppi_ = 96.0f;
     std::uint64_t scene_text_atlas_revision_ = 0;
     std::shared_ptr<Camera> camera_;
