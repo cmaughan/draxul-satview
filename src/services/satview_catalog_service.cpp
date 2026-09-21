@@ -4,6 +4,7 @@
 #include <draxul/perf_timing.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -14,6 +15,11 @@
 #include <system_error>
 #include <utility>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace draxul::satview
 {
 
@@ -22,6 +28,8 @@ namespace
 
 constexpr const char* kDefaultCelestrakGroup = "active";
 constexpr std::size_t kMaxCatalogResponseBytes = 64 * 1024 * 1024;
+std::atomic<std::uint64_t> g_cache_temporary_sequence{ 0 };
+std::mutex g_cache_publication_mutex;
 
 std::string to_lower_ascii(std::string_view text)
 {
@@ -102,7 +110,10 @@ bool write_text_atomic(const std::filesystem::path& path, std::string_view conte
         return false;
     }
 
-    const std::filesystem::path tmp = path.string() + ".tmp";
+    const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path tmp = path.string() + ".tmp."
+        + std::to_string(timestamp) + "."
+        + std::to_string(g_cache_temporary_sequence.fetch_add(1, std::memory_order_relaxed));
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out.is_open())
@@ -118,17 +129,22 @@ bool write_text_atomic(const std::filesystem::path& path, std::string_view conte
         }
     }
 
+#ifdef _WIN32
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+#else
     std::filesystem::rename(tmp, path, ec);
+#endif
     if (ec)
     {
-        std::filesystem::remove(path, ec);
-        ec.clear();
-        std::filesystem::rename(tmp, path, ec);
-        if (ec)
-        {
-            error = "failed to replace " + path.string() + ": " + ec.message();
-            return false;
-        }
+        // Never remove the destination as a replacement fallback: another
+        // service may just have published it. Keep the last valid cache and
+        // discard only this writer's private temporary file.
+        const std::string replace_error = ec.message();
+        std::error_code cleanup_ec;
+        std::filesystem::remove(tmp, cleanup_ec);
+        error = "failed to replace " + path.string() + ": " + replace_error;
+        return false;
     }
     return true;
 }
@@ -292,6 +308,10 @@ bool write_cache_files(
     SatViewCatalogService::Clock::time_point fetched_at,
     std::string& error)
 {
+    // The payload and its metadata are one publication transaction within the
+    // process. Unique temporaries protect individual files; this lock prevents
+    // two SatView service instances from interleaving the pair.
+    std::lock_guard publication_lock(g_cache_publication_mutex);
     if (!write_text_atomic(payload_path, raw_payload, error))
         return false;
 
@@ -489,6 +509,11 @@ void SatViewCatalogService::pump()
 
     if (should_join && worker_.joinable())
         worker_.join();
+    if (should_join)
+    {
+        std::lock_guard lock(mutex_);
+        refresh_in_flight_ = false;
+    }
     if (result.has_value())
         apply_worker_result(std::move(*result));
 }
@@ -731,7 +756,6 @@ void SatViewCatalogService::start_refresh()
 
         std::lock_guard lock(mutex_);
         pending_result_ = std::move(result);
-        refresh_in_flight_ = false;
         completion_ready_ = true;
     });
 }

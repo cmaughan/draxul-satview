@@ -5,8 +5,10 @@
 #include <draxul/satview/satview_catalog_service.h>
 
 #include <chrono>
+#include <atomic>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <utility>
 
 using draxul::satview::SatViewCatalogService;
@@ -315,4 +317,73 @@ TEST_CASE("SatView catalog service keeps one cached source when the other refres
     CHECK(status.satcat.data_source == SatViewCatalogService::DataSource::Cache);
     CHECK(status.satcat.error == "SATCAT unavailable");
     CHECK(status.object_count == 3);
+}
+
+TEST_CASE("SatView catalog service retires a completed worker before refreshing again", "[satview][catalog][service][thread]")
+{
+    draxul::tests::TempDir temp("satview-catalog-service-retire");
+    std::atomic<int> calls{ 0 };
+    std::atomic<bool> second_fetch_completed{ false };
+    auto config = config_for(temp.path, [&](std::string_view url, std::string& error) {
+        const int call = calls.fetch_add(1) + 1;
+        error.clear();
+        if (call == 2)
+            second_fetch_completed.store(true, std::memory_order_release);
+        return url.find("satcat.csv") != std::string_view::npos
+            ? std::string(kOneObjectSatcat)
+            : std::string(kOneObjectJson);
+    });
+    config.refresh_interval = std::chrono::seconds::zero();
+    config.satcat_refresh_interval = std::chrono::seconds::zero();
+
+    SatViewCatalogService service;
+    service.start(std::move(config));
+    REQUIRE(draxul::tests::pump_until(
+        [] {},
+        [&] { return second_fetch_completed.load(std::memory_order_acquire); },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+
+    // The worker has returned but remains joinable until request_refresh pumps
+    // its result. Replacing it here used to call std::terminate.
+    bool restarted = false;
+    REQUIRE(draxul::tests::pump_until(
+        [&] { restarted = service.request_refresh(); },
+        [&] { return restarted; },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+    REQUIRE(wait_for_idle(service));
+    CHECK(calls.load() >= 4);
+}
+
+TEST_CASE("SatView concurrent catalog publishers leave a coherent reusable cache", "[satview][catalog][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-catalog-service-concurrent");
+    std::atomic<int> ready{ 0 };
+    const auto concurrent_fetch = [&](std::string_view url, std::string& error) {
+        ready.fetch_add(1, std::memory_order_release);
+        while (ready.load(std::memory_order_acquire) < 2)
+            std::this_thread::yield();
+        error.clear();
+        return url.find("satcat.csv") != std::string_view::npos
+            ? std::string(kOneObjectSatcat)
+            : std::string(kOneObjectJson);
+    };
+
+    SatViewCatalogService first;
+    SatViewCatalogService second;
+    first.start(config_for(temp.path, concurrent_fetch));
+    second.start(config_for(temp.path, concurrent_fetch));
+    REQUIRE(wait_for_idle(first));
+    REQUIRE(wait_for_idle(second));
+
+    int offline_fetches = 0;
+    SatViewCatalogService offline;
+    offline.start(config_for(temp.path, [&](std::string_view, std::string& error) {
+        ++offline_fetches;
+        error = "offline";
+        return std::string{};
+    }));
+    offline.pump();
+    CHECK(offline_fetches == 0);
+    CHECK(offline.status().data_source == SatViewCatalogService::DataSource::Cache);
+    CHECK(offline.status().object_count == 1);
 }

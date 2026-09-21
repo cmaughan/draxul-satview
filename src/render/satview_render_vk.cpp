@@ -248,39 +248,43 @@ struct SatViewScenePass::State
     TextureResource label_texture;
     TextureResource focus_body_texture;
     TextureResource context_body_texture;
-    BufferResource track_vertex_buffer;
-    BufferResource earth_track_vertex_buffer;
-    BufferResource marker_buffer;
-    BufferResource surface_marker_buffer;
-    BufferResource star_buffer;
-    BufferResource constellation_buffer;
-    BufferResource constellation_boundary_buffer;
-    BufferResource constellation_label_buffer;
-    BufferResource cardinal_label_buffer;
-    BufferResource observatory_fill_buffer;
-    BufferResource observatory_rim_buffer;
-    uint32_t track_vertex_count = 0;
-    uint32_t earth_track_vertex_count = 0;
-    uint32_t marker_count = 0;
-    uint32_t surface_marker_count = 0;
-    uint32_t star_count = 0;
-    uint32_t constellation_line_count = 0;
-    uint32_t constellation_boundary_line_count = 0;
-    uint32_t constellation_label_count = 0;
-    uint32_t cardinal_label_count = 0;
-    uint32_t observatory_fill_triangle_count = 0;
-    uint32_t observatory_rim_line_count = 0;
-    uint64_t uploaded_track_revision = 0;
-    uint64_t uploaded_earth_track_revision = 0;
-    uint64_t uploaded_marker_revision = 0;
-    uint64_t uploaded_surface_marker_revision = 0;
-    uint64_t uploaded_star_revision = 0;
-    uint64_t uploaded_constellation_revision = 0;
-    uint64_t uploaded_constellation_boundary_revision = 0;
-    uint64_t uploaded_constellation_label_revision = 0;
-    uint64_t uploaded_cardinal_label_revision = 0;
-    uint64_t uploaded_observatory_revision = 0;
-    uint64_t uploaded_observatory_rim_revision = 0;
+    struct FrameStreams
+    {
+        BufferResource track_vertex_buffer;
+        BufferResource earth_track_vertex_buffer;
+        BufferResource marker_buffer;
+        BufferResource surface_marker_buffer;
+        BufferResource star_buffer;
+        BufferResource constellation_buffer;
+        BufferResource constellation_boundary_buffer;
+        BufferResource constellation_label_buffer;
+        BufferResource cardinal_label_buffer;
+        BufferResource observatory_fill_buffer;
+        BufferResource observatory_rim_buffer;
+        uint32_t track_vertex_count = 0;
+        uint32_t earth_track_vertex_count = 0;
+        uint32_t marker_count = 0;
+        uint32_t surface_marker_count = 0;
+        uint32_t star_count = 0;
+        uint32_t constellation_line_count = 0;
+        uint32_t constellation_boundary_line_count = 0;
+        uint32_t constellation_label_count = 0;
+        uint32_t cardinal_label_count = 0;
+        uint32_t observatory_fill_triangle_count = 0;
+        uint32_t observatory_rim_line_count = 0;
+        uint64_t uploaded_track_revision = 0;
+        uint64_t uploaded_earth_track_revision = 0;
+        uint64_t uploaded_marker_revision = 0;
+        uint64_t uploaded_surface_marker_revision = 0;
+        uint64_t uploaded_star_revision = 0;
+        uint64_t uploaded_constellation_revision = 0;
+        uint64_t uploaded_constellation_boundary_revision = 0;
+        uint64_t uploaded_constellation_label_revision = 0;
+        uint64_t uploaded_cardinal_label_revision = 0;
+        uint64_t uploaded_observatory_revision = 0;
+        uint64_t uploaded_observatory_rim_revision = 0;
+    };
+    std::vector<FrameStreams> frame_streams;
     uint64_t uploaded_label_atlas_revision = 0;
     uint64_t uploaded_cloud_revision = 0;
     int uploaded_focus_body = -1;
@@ -449,17 +453,21 @@ struct SatViewScenePass::State
                 destroy_texture(device, allocator, label_texture);
                 destroy_texture(device, allocator, focus_body_texture);
                 destroy_texture(device, allocator, context_body_texture);
-                destroy_buffer(allocator, track_vertex_buffer);
-                destroy_buffer(allocator, earth_track_vertex_buffer);
-                destroy_buffer(allocator, marker_buffer);
-                destroy_buffer(allocator, surface_marker_buffer);
-                destroy_buffer(allocator, star_buffer);
-                destroy_buffer(allocator, constellation_buffer);
-                destroy_buffer(allocator, constellation_boundary_buffer);
-                destroy_buffer(allocator, constellation_label_buffer);
-                destroy_buffer(allocator, cardinal_label_buffer);
-                destroy_buffer(allocator, observatory_fill_buffer);
-                destroy_buffer(allocator, observatory_rim_buffer);
+                for (FrameStreams& streams : frame_streams)
+                {
+                    destroy_buffer(allocator, streams.track_vertex_buffer);
+                    destroy_buffer(allocator, streams.earth_track_vertex_buffer);
+                    destroy_buffer(allocator, streams.marker_buffer);
+                    destroy_buffer(allocator, streams.surface_marker_buffer);
+                    destroy_buffer(allocator, streams.star_buffer);
+                    destroy_buffer(allocator, streams.constellation_buffer);
+                    destroy_buffer(allocator, streams.constellation_boundary_buffer);
+                    destroy_buffer(allocator, streams.constellation_label_buffer);
+                    destroy_buffer(allocator, streams.cardinal_label_buffer);
+                    destroy_buffer(allocator, streams.observatory_fill_buffer);
+                    destroy_buffer(allocator, streams.observatory_rim_buffer);
+                }
+                frame_streams.clear();
             }
         }
         layout = VK_NULL_HANDLE;
@@ -470,28 +478,6 @@ struct SatViewScenePass::State
         main_render_pass = VK_NULL_HANDLE;
         allocator = VK_NULL_HANDLE;
         device = VK_NULL_HANDLE;
-        track_vertex_count = 0;
-        earth_track_vertex_count = 0;
-        marker_count = 0;
-        surface_marker_count = 0;
-        star_count = 0;
-        constellation_line_count = 0;
-        constellation_boundary_line_count = 0;
-        constellation_label_count = 0;
-        cardinal_label_count = 0;
-        observatory_fill_triangle_count = 0;
-        observatory_rim_line_count = 0;
-        uploaded_track_revision = 0;
-        uploaded_earth_track_revision = 0;
-        uploaded_marker_revision = 0;
-        uploaded_surface_marker_revision = 0;
-        uploaded_star_revision = 0;
-        uploaded_constellation_revision = 0;
-        uploaded_constellation_boundary_revision = 0;
-        uploaded_constellation_label_revision = 0;
-        uploaded_cardinal_label_revision = 0;
-        uploaded_observatory_revision = 0;
-        uploaded_observatory_rim_revision = 0;
         uploaded_label_atlas_revision = 0;
         uploaded_cloud_revision = 0;
         uploaded_focus_body = -1;
@@ -1045,8 +1031,24 @@ struct SatViewScenePass::State
     bool ensure_hdr_targets(uint32_t frame_count, int width, int height)
     {
         frame_count = std::max(1u, frame_count);
+        const bool multisampled = hdr_pipeline.multisampled();
+        const auto target_complete = [=](const HdrTargets& targets) {
+            return targets.width() == width && targets.height() == height
+                && targets.shared.scene_depth.image != VK_NULL_HANDLE
+                && targets.shared.scene_hdr.image != VK_NULL_HANDLE
+                && targets.shared.scene_final.image != VK_NULL_HANDLE
+                && targets.shared.scene_final_unorm_view != VK_NULL_HANDLE
+                && targets.shared.scene_framebuffer != VK_NULL_HANDLE
+                && targets.shared.tone_map_framebuffer != VK_NULL_HANDLE
+                && (!multisampled || targets.shared.scene_msaa.image != VK_NULL_HANDLE)
+                && targets.msaa_difference.image != VK_NULL_HANDLE
+                && targets.debug_framebuffer != VK_NULL_HANDLE
+                && targets.post_descriptor_set != VK_NULL_HANDLE
+                && targets.present_descriptor_set != VK_NULL_HANDLE
+                && (!multisampled || targets.debug_descriptor_set != VK_NULL_HANDLE);
+        };
         if (hdr_targets.size() == frame_count && !hdr_targets.empty()
-            && hdr_targets.front().width() == width && hdr_targets.front().height() == height)
+            && std::ranges::all_of(hdr_targets, target_complete))
             return true;
 
         vkDeviceWaitIdle(device);
@@ -1061,9 +1063,11 @@ struct SatViewScenePass::State
         pool_ci.poolSizeCount = 1;
         pool_ci.pPoolSizes = &pool_size;
         if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &hdr_descriptor_pool) != VK_SUCCESS)
+        {
+            destroy_hdr_targets();
             return false;
+        }
 
-        const bool multisampled = hdr_pipeline.multisampled();
         for (auto& targets : hdr_targets)
         {
             // The MSAA colour / depth / resolve / tone-mapped attachments and
@@ -1073,6 +1077,7 @@ struct SatViewScenePass::State
             if (!hdr_pipeline.create_targets(device, allocator, width, height, targets.shared, error))
             {
                 DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+                destroy_hdr_targets();
                 return false;
             }
             if (!create_attachment(device, allocator, width, height,
@@ -1081,7 +1086,10 @@ struct SatViewScenePass::State
                     VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 0,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     "satview.hdr.msaa-difference", targets.msaa_difference))
+            {
+                destroy_hdr_targets();
                 return false;
+            }
 
             VkFramebufferCreateInfo debug_fb_ci{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
             debug_fb_ci.renderPass = debug_render_pass;
@@ -1091,7 +1099,10 @@ struct SatViewScenePass::State
             debug_fb_ci.height = static_cast<uint32_t>(height);
             debug_fb_ci.layers = 1;
             if (vkCreateFramebuffer(device, &debug_fb_ci, nullptr, &targets.debug_framebuffer) != VK_SUCCESS)
+            {
+                destroy_hdr_targets();
                 return false;
+            }
 
             std::array<VkDescriptorSetLayout, 3> layouts = {
                 post_descriptor_set_layout,
@@ -1104,7 +1115,10 @@ struct SatViewScenePass::State
             alloc_ci.descriptorSetCount = multisampled ? 3u : 2u;
             alloc_ci.pSetLayouts = layouts.data();
             if (vkAllocateDescriptorSets(device, &alloc_ci, sets.data()) != VK_SUCCESS)
+            {
+                destroy_hdr_targets();
                 return false;
+            }
             targets.post_descriptor_set = sets[0];
             targets.present_descriptor_set = sets[1];
             targets.debug_descriptor_set = multisampled ? sets[2] : VK_NULL_HANDLE;
@@ -1125,6 +1139,11 @@ struct SatViewScenePass::State
                 writes[i].pImageInfo = &image_infos[i];
             }
             vkUpdateDescriptorSets(device, write_count, writes.data(), 0, nullptr);
+        }
+        if (!std::ranges::all_of(hdr_targets, target_complete))
+        {
+            destroy_hdr_targets();
+            return false;
         }
         return true;
     }
@@ -1730,6 +1749,29 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         || !state_->ensure_hdr_targets(vk_ctx->buffered_frame_count(), width, height))
         return;
 
+    const uint32_t buffered_frame_count = std::max(1u, vk_ctx->buffered_frame_count());
+    if (state_->frame_streams.size() != buffered_frame_count)
+    {
+        for (auto& old_streams : state_->frame_streams)
+        {
+            destroy_buffer(state_->allocator, old_streams.track_vertex_buffer);
+            destroy_buffer(state_->allocator, old_streams.earth_track_vertex_buffer);
+            destroy_buffer(state_->allocator, old_streams.marker_buffer);
+            destroy_buffer(state_->allocator, old_streams.surface_marker_buffer);
+            destroy_buffer(state_->allocator, old_streams.star_buffer);
+            destroy_buffer(state_->allocator, old_streams.constellation_buffer);
+            destroy_buffer(state_->allocator, old_streams.constellation_boundary_buffer);
+            destroy_buffer(state_->allocator, old_streams.constellation_label_buffer);
+            destroy_buffer(state_->allocator, old_streams.cardinal_label_buffer);
+            destroy_buffer(state_->allocator, old_streams.observatory_fill_buffer);
+            destroy_buffer(state_->allocator, old_streams.observatory_rim_buffer);
+        }
+        state_->frame_streams.clear();
+        state_->frame_streams.resize(buffered_frame_count);
+    }
+    const uint32_t frame_index = vk_ctx->frame_index() % buffered_frame_count;
+    auto& streams = state_->frame_streams[frame_index];
+
     if (pending_cloud_image_
         && state_->ensure_cloud_texture(*vk_ctx, *pending_cloud_image_, cloud_revision_))
         pending_cloud_image_.reset();
@@ -1743,81 +1785,80 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         *vk_ctx,
         track_vertices_,
         track_revision_,
-        state_->track_vertex_buffer,
-        state_->track_vertex_count,
-        state_->uploaded_track_revision);
+        streams.track_vertex_buffer,
+        streams.track_vertex_count,
+        streams.uploaded_track_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         earth_track_vertices_,
         earth_track_revision_,
-        state_->earth_track_vertex_buffer,
-        state_->earth_track_vertex_count,
-        state_->uploaded_earth_track_revision);
+        streams.earth_track_vertex_buffer,
+        streams.earth_track_vertex_count,
+        streams.uploaded_earth_track_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         markers_,
         marker_revision_,
-        state_->marker_buffer,
-        state_->marker_count,
-        state_->uploaded_marker_revision);
+        streams.marker_buffer,
+        streams.marker_count,
+        streams.uploaded_marker_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         surface_markers_,
         surface_marker_revision_,
-        state_->surface_marker_buffer,
-        state_->surface_marker_count,
-        state_->uploaded_surface_marker_revision);
+        streams.surface_marker_buffer,
+        streams.surface_marker_count,
+        streams.uploaded_surface_marker_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         stars_,
         star_revision_,
-        state_->star_buffer,
-        state_->star_count,
-        state_->uploaded_star_revision);
+        streams.star_buffer,
+        streams.star_count,
+        streams.uploaded_star_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         constellation_lines_,
         constellation_revision_,
-        state_->constellation_buffer,
-        state_->constellation_line_count,
-        state_->uploaded_constellation_revision);
+        streams.constellation_buffer,
+        streams.constellation_line_count,
+        streams.uploaded_constellation_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         constellation_boundary_lines_,
         constellation_boundary_revision_,
-        state_->constellation_boundary_buffer,
-        state_->constellation_boundary_line_count,
-        state_->uploaded_constellation_boundary_revision);
+        streams.constellation_boundary_buffer,
+        streams.constellation_boundary_line_count,
+        streams.uploaded_constellation_boundary_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         constellation_labels_,
         constellation_label_revision_,
-        state_->constellation_label_buffer,
-        state_->constellation_label_count,
-        state_->uploaded_constellation_label_revision);
+        streams.constellation_label_buffer,
+        streams.constellation_label_count,
+        streams.uploaded_constellation_label_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         cardinal_labels_,
         cardinal_label_revision_,
-        state_->cardinal_label_buffer,
-        state_->cardinal_label_count,
-        state_->uploaded_cardinal_label_revision);
+        streams.cardinal_label_buffer,
+        streams.cardinal_label_count,
+        streams.uploaded_cardinal_label_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         observatory_fill_triangles_,
         observatory_revision_,
-        state_->observatory_fill_buffer,
-        state_->observatory_fill_triangle_count,
-        state_->uploaded_observatory_revision);
+        streams.observatory_fill_buffer,
+        streams.observatory_fill_triangle_count,
+        streams.uploaded_observatory_revision);
     state_->ensure_vertex_buffer(
         *vk_ctx,
         observatory_rim_lines_,
         observatory_revision_,
-        state_->observatory_rim_buffer,
-        state_->observatory_rim_line_count,
-        state_->uploaded_observatory_rim_revision);
+        streams.observatory_rim_buffer,
+        streams.observatory_rim_line_count,
+        streams.uploaded_observatory_rim_revision);
 
-    const uint32_t frame_index = vk_ctx->frame_index() % static_cast<uint32_t>(state_->hdr_targets.size());
     auto& targets = state_->hdr_targets[frame_index];
     VkCommandBuffer cmd = vk_ctx->command_buffer();
 
@@ -1849,9 +1890,9 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->layout,
         0, 1, &state_->descriptor_set, 0, nullptr);
     auto draw_stars = [&]() {
-        const uint32_t draw_count = state_->star_count;
+        const uint32_t draw_count = streams.star_count;
         if (draw_count == 0
-            || state_->star_buffer.buffer == VK_NULL_HANDLE
+            || streams.star_buffer.buffer == VK_NULL_HANDLE
             || state_->star_pipeline == VK_NULL_HANDLE)
             return;
 
@@ -1862,7 +1903,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         star_frame.render_params.z = star_projection_aspect_scale_;
         star_frame.render_params.w = star_brightness_scale_;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->star_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->star_buffer.buffer, &offset);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.star_buffer.buffer, &offset);
         vkCmdPushConstants(cmd, state_->layout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(SatViewFrameUniforms), &star_frame);
@@ -1870,8 +1911,8 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     };
     auto draw_constellations = [&]() {
         if (!constellation_lines_enabled_
-            || state_->constellation_line_count == 0
-            || state_->constellation_buffer.buffer == VK_NULL_HANDLE
+            || streams.constellation_line_count == 0
+            || streams.constellation_buffer.buffer == VK_NULL_HANDLE
             || state_->constellation_pipeline == VK_NULL_HANDLE)
             return;
 
@@ -1880,16 +1921,16 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         line_frame.render_params = glm::vec4(
             static_cast<float>(width), static_cast<float>(height), 0.0f, 0.0f);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->constellation_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->constellation_buffer.buffer, &offset);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.constellation_buffer.buffer, &offset);
         vkCmdPushConstants(cmd, state_->layout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(SatViewFrameUniforms), &line_frame);
-        vkCmdDraw(cmd, 6, state_->constellation_line_count, 0, 0);
+        vkCmdDraw(cmd, 6, streams.constellation_line_count, 0, 0);
     };
     auto draw_boundaries = [&]() {
         if (!constellation_boundaries_enabled_
-            || state_->constellation_boundary_line_count == 0
-            || state_->constellation_boundary_buffer.buffer == VK_NULL_HANDLE
+            || streams.constellation_boundary_line_count == 0
+            || streams.constellation_boundary_buffer.buffer == VK_NULL_HANDLE
             || state_->constellation_pipeline == VK_NULL_HANDLE)
             return;
         VkDeviceSize offset = 0;
@@ -1897,11 +1938,11 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         line_frame.render_params = glm::vec4(
             static_cast<float>(width), static_cast<float>(height), 0.0f, 0.0f);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->constellation_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->constellation_boundary_buffer.buffer, &offset);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.constellation_boundary_buffer.buffer, &offset);
         vkCmdPushConstants(cmd, state_->layout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(SatViewFrameUniforms), &line_frame);
-        vkCmdDraw(cmd, 6, state_->constellation_boundary_line_count, 0, 0);
+        vkCmdDraw(cmd, 6, streams.constellation_boundary_line_count, 0, 0);
     };
     auto draw_labels = [&](BufferResource& buffer, uint32_t count) {
         if (count == 0 || buffer.buffer == VK_NULL_HANDLE || state_->label_pipeline == VK_NULL_HANDLE)
@@ -1957,7 +1998,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         draw_boundaries();
         draw_constellations();
         draw_stars();
-        draw_labels(state_->constellation_label_buffer, state_->constellation_label_count);
+        draw_labels(streams.constellation_label_buffer, streams.constellation_label_count);
 
         if (sun_enabled_ && sun_position_radius_.w > 0.0f)
         {
@@ -1995,7 +2036,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         draw_boundaries();
         draw_constellations();
         draw_stars();
-        draw_labels(state_->constellation_label_buffer, state_->constellation_label_count);
+        draw_labels(streams.constellation_label_buffer, streams.constellation_label_count);
 
         if (sun_enabled_ && sun_position_radius_.w > 0.0f)
         {
@@ -2100,12 +2141,12 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         }
     }
 
-    if (state_->earth_track_vertex_count != 0
-        && state_->earth_track_vertex_buffer.buffer != VK_NULL_HANDLE)
+    if (streams.earth_track_vertex_count != 0
+        && streams.earth_track_vertex_buffer.buffer != VK_NULL_HANDLE)
     {
         VkDeviceSize offset = 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->orbit_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->earth_track_vertex_buffer.buffer, &offset);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.earth_track_vertex_buffer.buffer, &offset);
         SatViewFrameUniforms earth_track_frame = frame;
         earth_track_frame.render_params.w = -1.0f;
         if (map_projection_)
@@ -2116,7 +2157,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
                 vkCmdPushConstants(cmd, state_->layout,
                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                     0, sizeof(SatViewFrameUniforms), &earth_track_frame);
-                vkCmdDraw(cmd, state_->earth_track_vertex_count, 1, 0, 0);
+                vkCmdDraw(cmd, streams.earth_track_vertex_count, 1, 0, 0);
             }
         }
         else
@@ -2125,18 +2166,18 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
             vkCmdPushConstants(cmd, state_->layout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(SatViewFrameUniforms), &earth_track_frame);
-            vkCmdDraw(cmd, state_->earth_track_vertex_count, 1, 0, 0);
+            vkCmdDraw(cmd, streams.earth_track_vertex_count, 1, 0, 0);
         }
         vkCmdPushConstants(cmd, state_->layout,
             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
             0, sizeof(SatViewFrameUniforms), &frame);
     }
 
-    if (state_->track_vertex_count != 0 && state_->track_vertex_buffer.buffer != VK_NULL_HANDLE)
+    if (streams.track_vertex_count != 0 && streams.track_vertex_buffer.buffer != VK_NULL_HANDLE)
     {
         VkDeviceSize offset = 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->orbit_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->track_vertex_buffer.buffer, &offset);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.track_vertex_buffer.buffer, &offset);
         if (map_projection_)
         {
             for (int copy = -1; copy <= 1; ++copy)
@@ -2146,7 +2187,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
                 vkCmdPushConstants(cmd, state_->layout,
                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                     0, sizeof(SatViewFrameUniforms), &track_frame);
-                vkCmdDraw(cmd, state_->track_vertex_count, 1, 0, 0);
+                vkCmdDraw(cmd, streams.track_vertex_count, 1, 0, 0);
             }
             vkCmdPushConstants(cmd, state_->layout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2154,28 +2195,28 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         }
         else
         {
-            vkCmdDraw(cmd, state_->track_vertex_count, 1, 0, 0);
+            vkCmdDraw(cmd, streams.track_vertex_count, 1, 0, 0);
         }
     }
 
-    if (state_->marker_count != 0
-        && state_->marker_buffer.buffer != VK_NULL_HANDLE
+    if (streams.marker_count != 0
+        && streams.marker_buffer.buffer != VK_NULL_HANDLE
         && state_->marker_pipeline != VK_NULL_HANDLE)
     {
         VkDeviceSize offset = 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->marker_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->marker_buffer.buffer, &offset);
-        vkCmdDraw(cmd, kSatViewMarkerVerticesPerInstance, state_->marker_count, 0, 0);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.marker_buffer.buffer, &offset);
+        vkCmdDraw(cmd, kSatViewMarkerVerticesPerInstance, streams.marker_count, 0, 0);
     }
 
-    if (state_->surface_marker_count != 0
-        && state_->surface_marker_buffer.buffer != VK_NULL_HANDLE
+    if (streams.surface_marker_count != 0
+        && streams.surface_marker_buffer.buffer != VK_NULL_HANDLE
         && state_->marker_pipeline != VK_NULL_HANDLE)
     {
         VkDeviceSize offset = 0;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->marker_pipeline);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &state_->surface_marker_buffer.buffer, &offset);
-        vkCmdDraw(cmd, kSatViewMarkerVerticesPerInstance, state_->surface_marker_count, 0, 0);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &streams.surface_marker_buffer.buffer, &offset);
+        vkCmdDraw(cmd, kSatViewMarkerVerticesPerInstance, streams.surface_marker_count, 0, 0);
     }
 
     if (ground_projection_ && ground_visible_)
@@ -2190,26 +2231,26 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     if (ground_projection_ && observatory_horizon_enabled_)
     {
         VkDeviceSize offset = 0;
-        if (state_->observatory_fill_triangle_count != 0
-            && state_->observatory_fill_buffer.buffer != VK_NULL_HANDLE)
+        if (streams.observatory_fill_triangle_count != 0
+            && streams.observatory_fill_buffer.buffer != VK_NULL_HANDLE)
         {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->landscape_fill_pipeline);
-            vkCmdBindVertexBuffers(cmd, 0, 1, &state_->observatory_fill_buffer.buffer, &offset);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &streams.observatory_fill_buffer.buffer, &offset);
             vkCmdPushConstants(cmd, state_->layout,
                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                 0, sizeof(SatViewFrameUniforms), &frame);
-            vkCmdDraw(cmd, 3, state_->observatory_fill_triangle_count, 0, 0);
+            vkCmdDraw(cmd, 3, streams.observatory_fill_triangle_count, 0, 0);
         }
-        if (state_->observatory_rim_line_count != 0
-            && state_->observatory_rim_buffer.buffer != VK_NULL_HANDLE)
+        if (streams.observatory_rim_line_count != 0
+            && streams.observatory_rim_buffer.buffer != VK_NULL_HANDLE)
         {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, state_->landscape_rim_pipeline);
-            vkCmdBindVertexBuffers(cmd, 0, 1, &state_->observatory_rim_buffer.buffer, &offset);
-            vkCmdDraw(cmd, 2, state_->observatory_rim_line_count, 0, 0);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &streams.observatory_rim_buffer.buffer, &offset);
+            vkCmdDraw(cmd, 2, streams.observatory_rim_line_count, 0, 0);
         }
     }
     if (ground_projection_)
-        draw_labels(state_->cardinal_label_buffer, state_->cardinal_label_count);
+        draw_labels(streams.cardinal_label_buffer, streams.cardinal_label_count);
 
     vkCmdEndRenderPass(cmd);
 

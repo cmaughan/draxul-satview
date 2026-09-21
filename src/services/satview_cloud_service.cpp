@@ -153,6 +153,10 @@ void SatViewCloudService::pump()
     {
         if (worker_.joinable())
             worker_.join();
+        {
+            std::lock_guard lock(mutex_);
+            refresh_in_flight_ = false;
+        }
         apply_worker_result(std::move(*result));
     }
 
@@ -315,7 +319,6 @@ void SatViewCloudService::start_refresh(bool force_fetch)
 
         std::lock_guard lock(mutex_);
         pending_result_ = std::move(result);
-        refresh_in_flight_ = false;
         completion_ready_ = true;
     });
 }

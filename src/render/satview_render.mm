@@ -71,39 +71,43 @@ struct SatViewScenePass::State
     ObjCRef<id<MTLSamplerState>> earth_sampler;
     ObjCRef<id<MTLSamplerState>> label_sampler;
     ObjCRef<id<MTLSamplerState>> hdr_sampler;
-    ObjCRef<id<MTLBuffer>> track_vertex_buffer;
-    ObjCRef<id<MTLBuffer>> earth_track_vertex_buffer;
-    ObjCRef<id<MTLBuffer>> marker_buffer;
-    ObjCRef<id<MTLBuffer>> surface_marker_buffer;
-    ObjCRef<id<MTLBuffer>> star_buffer;
-    ObjCRef<id<MTLBuffer>> constellation_buffer;
-    ObjCRef<id<MTLBuffer>> constellation_boundary_buffer;
-    ObjCRef<id<MTLBuffer>> constellation_label_buffer;
-    ObjCRef<id<MTLBuffer>> cardinal_label_buffer;
-    ObjCRef<id<MTLBuffer>> observatory_fill_buffer;
-    ObjCRef<id<MTLBuffer>> observatory_rim_buffer;
-    NSUInteger track_vertex_count = 0;
-    NSUInteger earth_track_vertex_count = 0;
-    NSUInteger marker_count = 0;
-    NSUInteger surface_marker_count = 0;
-    NSUInteger star_count = 0;
-    NSUInteger constellation_line_count = 0;
-    NSUInteger constellation_boundary_line_count = 0;
-    NSUInteger constellation_label_count = 0;
-    NSUInteger cardinal_label_count = 0;
-    NSUInteger observatory_fill_triangle_count = 0;
-    NSUInteger observatory_rim_line_count = 0;
-    uint64_t uploaded_track_revision = 0;
-    uint64_t uploaded_earth_track_revision = 0;
-    uint64_t uploaded_marker_revision = 0;
-    uint64_t uploaded_surface_marker_revision = 0;
-    uint64_t uploaded_star_revision = 0;
-    uint64_t uploaded_constellation_revision = 0;
-    uint64_t uploaded_constellation_boundary_revision = 0;
-    uint64_t uploaded_constellation_label_revision = 0;
-    uint64_t uploaded_cardinal_label_revision = 0;
-    uint64_t uploaded_observatory_revision = 0;
-    uint64_t uploaded_observatory_rim_revision = 0;
+    struct FrameStreams
+    {
+        ObjCRef<id<MTLBuffer>> track_vertex_buffer;
+        ObjCRef<id<MTLBuffer>> earth_track_vertex_buffer;
+        ObjCRef<id<MTLBuffer>> marker_buffer;
+        ObjCRef<id<MTLBuffer>> surface_marker_buffer;
+        ObjCRef<id<MTLBuffer>> star_buffer;
+        ObjCRef<id<MTLBuffer>> constellation_buffer;
+        ObjCRef<id<MTLBuffer>> constellation_boundary_buffer;
+        ObjCRef<id<MTLBuffer>> constellation_label_buffer;
+        ObjCRef<id<MTLBuffer>> cardinal_label_buffer;
+        ObjCRef<id<MTLBuffer>> observatory_fill_buffer;
+        ObjCRef<id<MTLBuffer>> observatory_rim_buffer;
+        NSUInteger track_vertex_count = 0;
+        NSUInteger earth_track_vertex_count = 0;
+        NSUInteger marker_count = 0;
+        NSUInteger surface_marker_count = 0;
+        NSUInteger star_count = 0;
+        NSUInteger constellation_line_count = 0;
+        NSUInteger constellation_boundary_line_count = 0;
+        NSUInteger constellation_label_count = 0;
+        NSUInteger cardinal_label_count = 0;
+        NSUInteger observatory_fill_triangle_count = 0;
+        NSUInteger observatory_rim_line_count = 0;
+        uint64_t uploaded_track_revision = 0;
+        uint64_t uploaded_earth_track_revision = 0;
+        uint64_t uploaded_marker_revision = 0;
+        uint64_t uploaded_surface_marker_revision = 0;
+        uint64_t uploaded_star_revision = 0;
+        uint64_t uploaded_constellation_revision = 0;
+        uint64_t uploaded_constellation_boundary_revision = 0;
+        uint64_t uploaded_constellation_label_revision = 0;
+        uint64_t uploaded_cardinal_label_revision = 0;
+        uint64_t uploaded_observatory_revision = 0;
+        uint64_t uploaded_observatory_rim_revision = 0;
+    };
+    std::vector<FrameStreams> frame_streams;
     uint64_t uploaded_label_atlas_revision = 0;
     uint64_t uploaded_cloud_revision = 0;
     int uploaded_focus_body = -1;
@@ -333,39 +337,7 @@ struct SatViewScenePass::State
         label_sampler.reset();
         hdr_sampler.reset();
         hdr_targets.clear();
-        track_vertex_buffer.reset();
-        earth_track_vertex_buffer.reset();
-        marker_buffer.reset();
-        surface_marker_buffer.reset();
-        star_buffer.reset();
-        constellation_buffer.reset();
-        constellation_boundary_buffer.reset();
-        constellation_label_buffer.reset();
-        cardinal_label_buffer.reset();
-        observatory_fill_buffer.reset();
-        observatory_rim_buffer.reset();
-        track_vertex_count = 0;
-        earth_track_vertex_count = 0;
-        marker_count = 0;
-        surface_marker_count = 0;
-        star_count = 0;
-        constellation_line_count = 0;
-        constellation_boundary_line_count = 0;
-        constellation_label_count = 0;
-        cardinal_label_count = 0;
-        observatory_fill_triangle_count = 0;
-        observatory_rim_line_count = 0;
-        uploaded_track_revision = 0;
-        uploaded_earth_track_revision = 0;
-        uploaded_marker_revision = 0;
-        uploaded_surface_marker_revision = 0;
-        uploaded_star_revision = 0;
-        uploaded_constellation_revision = 0;
-        uploaded_constellation_boundary_revision = 0;
-        uploaded_constellation_label_revision = 0;
-        uploaded_cardinal_label_revision = 0;
-        uploaded_observatory_revision = 0;
-        uploaded_observatory_rim_revision = 0;
+        frame_streams.clear();
         uploaded_label_atlas_revision = 0;
         uploaded_cloud_revision = 0;
         uploaded_focus_body = -1;
@@ -1045,6 +1017,11 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     if (!state_->ensure_hdr_targets(
             metal_ctx->device(), ctx.buffered_frame_count(), width, height))
         return;
+    const uint32_t buffered_frame_count = std::max(1u, ctx.buffered_frame_count());
+    if (state_->frame_streams.size() != buffered_frame_count)
+        state_->frame_streams.resize(buffered_frame_count);
+    const uint32_t frame_index = ctx.frame_index() % buffered_frame_count;
+    auto& streams = state_->frame_streams[frame_index];
     if (pending_cloud_image_
         && state_->ensure_cloud_texture(*pending_cloud_image_, cloud_revision_))
     {
@@ -1060,81 +1037,80 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         metal_ctx->device(),
         track_vertices_,
         track_revision_,
-        state_->track_vertex_buffer,
-        state_->track_vertex_count,
-        state_->uploaded_track_revision);
+        streams.track_vertex_buffer,
+        streams.track_vertex_count,
+        streams.uploaded_track_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         earth_track_vertices_,
         earth_track_revision_,
-        state_->earth_track_vertex_buffer,
-        state_->earth_track_vertex_count,
-        state_->uploaded_earth_track_revision);
+        streams.earth_track_vertex_buffer,
+        streams.earth_track_vertex_count,
+        streams.uploaded_earth_track_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         markers_,
         marker_revision_,
-        state_->marker_buffer,
-        state_->marker_count,
-        state_->uploaded_marker_revision);
+        streams.marker_buffer,
+        streams.marker_count,
+        streams.uploaded_marker_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         surface_markers_,
         surface_marker_revision_,
-        state_->surface_marker_buffer,
-        state_->surface_marker_count,
-        state_->uploaded_surface_marker_revision);
+        streams.surface_marker_buffer,
+        streams.surface_marker_count,
+        streams.uploaded_surface_marker_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         stars_,
         star_revision_,
-        state_->star_buffer,
-        state_->star_count,
-        state_->uploaded_star_revision);
+        streams.star_buffer,
+        streams.star_count,
+        streams.uploaded_star_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         constellation_lines_,
         constellation_revision_,
-        state_->constellation_buffer,
-        state_->constellation_line_count,
-        state_->uploaded_constellation_revision);
+        streams.constellation_buffer,
+        streams.constellation_line_count,
+        streams.uploaded_constellation_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         constellation_boundary_lines_,
         constellation_boundary_revision_,
-        state_->constellation_boundary_buffer,
-        state_->constellation_boundary_line_count,
-        state_->uploaded_constellation_boundary_revision);
+        streams.constellation_boundary_buffer,
+        streams.constellation_boundary_line_count,
+        streams.uploaded_constellation_boundary_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         constellation_labels_,
         constellation_label_revision_,
-        state_->constellation_label_buffer,
-        state_->constellation_label_count,
-        state_->uploaded_constellation_label_revision);
+        streams.constellation_label_buffer,
+        streams.constellation_label_count,
+        streams.uploaded_constellation_label_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         cardinal_labels_,
         cardinal_label_revision_,
-        state_->cardinal_label_buffer,
-        state_->cardinal_label_count,
-        state_->uploaded_cardinal_label_revision);
+        streams.cardinal_label_buffer,
+        streams.cardinal_label_count,
+        streams.uploaded_cardinal_label_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         observatory_fill_triangles_,
         observatory_revision_,
-        state_->observatory_fill_buffer,
-        state_->observatory_fill_triangle_count,
-        state_->uploaded_observatory_revision);
+        streams.observatory_fill_buffer,
+        streams.observatory_fill_triangle_count,
+        streams.uploaded_observatory_revision);
     state_->ensure_buffer(
         metal_ctx->device(),
         observatory_rim_lines_,
         observatory_revision_,
-        state_->observatory_rim_buffer,
-        state_->observatory_rim_line_count,
-        state_->uploaded_observatory_rim_revision);
+        streams.observatory_rim_buffer,
+        streams.observatory_rim_line_count,
+        streams.uploaded_observatory_rim_revision);
 
-    const uint32_t frame_index = ctx.frame_index() % static_cast<uint32_t>(state_->hdr_targets.size());
     auto& targets = state_->hdr_targets[frame_index];
     MTLRenderPassDescriptor* scene_desc = [MTLRenderPassDescriptor renderPassDescriptor];
     scene_desc.colorAttachments[0].texture = state_->scene_sample_count > 1
@@ -1184,8 +1160,8 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     [encoder setFragmentSamplerState:state_->label_sampler.get() atIndex:1];
 
     auto draw_stars = [&]() {
-        const NSUInteger draw_count = state_->star_count;
-        if (draw_count == 0 || !state_->star_buffer.get() || !state_->star_pipeline.get())
+        const NSUInteger draw_count = streams.star_count;
+        if (draw_count == 0 || !streams.star_buffer.get() || !state_->star_pipeline.get())
             return;
 
         SatViewFrameUniforms star_frame = frame_;
@@ -1196,7 +1172,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         [encoder setRenderPipelineState:state_->star_pipeline.get()];
         [encoder setDepthStencilState:state_->depth_disabled_state.get()];
         [encoder setVertexBytes:&star_frame length:sizeof(star_frame) atIndex:0];
-        [encoder setVertexBuffer:state_->star_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.star_buffer.get() offset:0 atIndex:1];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                     vertexStart:0
                     vertexCount:kSatViewStarVerticesPerInstance
@@ -1204,8 +1180,8 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     };
     auto draw_constellations = [&]() {
         if (!constellation_lines_enabled_
-            || state_->constellation_line_count == 0
-            || !state_->constellation_buffer.get()
+            || streams.constellation_line_count == 0
+            || !streams.constellation_buffer.get()
             || !state_->constellation_pipeline.get())
             return;
 
@@ -1215,16 +1191,16 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         line_frame.render_params = glm::vec4(
             static_cast<float>(width), static_cast<float>(height), 0.0f, 0.0f);
         [encoder setVertexBytes:&line_frame length:sizeof(line_frame) atIndex:0];
-        [encoder setVertexBuffer:state_->constellation_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.constellation_buffer.get() offset:0 atIndex:1];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                     vertexStart:0
                     vertexCount:6
-                  instanceCount:state_->constellation_line_count];
+                  instanceCount:streams.constellation_line_count];
     };
     auto draw_boundaries = [&]() {
         if (!constellation_boundaries_enabled_
-            || state_->constellation_boundary_line_count == 0
-            || !state_->constellation_boundary_buffer.get()
+            || streams.constellation_boundary_line_count == 0
+            || !streams.constellation_boundary_buffer.get()
             || !state_->constellation_pipeline.get())
             return;
 
@@ -1234,11 +1210,11 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         line_frame.render_params = glm::vec4(
             static_cast<float>(width), static_cast<float>(height), 0.0f, 0.0f);
         [encoder setVertexBytes:&line_frame length:sizeof(line_frame) atIndex:0];
-        [encoder setVertexBuffer:state_->constellation_boundary_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.constellation_boundary_buffer.get() offset:0 atIndex:1];
         [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                     vertexStart:0
                     vertexCount:6
-                  instanceCount:state_->constellation_boundary_line_count];
+                  instanceCount:streams.constellation_boundary_line_count];
     };
     auto draw_labels = [&](id<MTLBuffer> buffer, NSUInteger count) {
         if (count == 0 || !buffer || !state_->label_pipeline.get())
@@ -1305,7 +1281,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         draw_boundaries();
         draw_constellations();
         draw_stars();
-        draw_labels(state_->constellation_label_buffer.get(), state_->constellation_label_count);
+        draw_labels(streams.constellation_label_buffer.get(), streams.constellation_label_count);
 
         if (sun_enabled_ && sun_position_radius_.w > 0.0f)
         {
@@ -1346,7 +1322,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         draw_boundaries();
         draw_constellations();
         draw_stars();
-        draw_labels(state_->constellation_label_buffer.get(), state_->constellation_label_count);
+        draw_labels(streams.constellation_label_buffer.get(), streams.constellation_label_count);
         [encoder setDepthStencilState:state_->depth_write_state.get()];
 
         if (sun_enabled_ && sun_position_radius_.w > 0.0f)
@@ -1472,11 +1448,11 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         }
     }
 
-    if (state_->earth_track_vertex_count != 0 && state_->earth_track_vertex_buffer.get())
+    if (streams.earth_track_vertex_count != 0 && streams.earth_track_vertex_buffer.get())
     {
         [encoder setRenderPipelineState:state_->orbit_pipeline.get()];
         [encoder setDepthStencilState:state_->depth_read_state.get()];
-        [encoder setVertexBuffer:state_->earth_track_vertex_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.earth_track_vertex_buffer.get() offset:0 atIndex:1];
         SatViewFrameUniforms earth_track_frame = frame_;
         earth_track_frame.render_params.w = -1.0f;
         if (map_projection_)
@@ -1487,7 +1463,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
                 [encoder setVertexBytes:&earth_track_frame length:sizeof(earth_track_frame) atIndex:0];
                 [encoder drawPrimitives:MTLPrimitiveTypeLine
                             vertexStart:0
-                            vertexCount:state_->earth_track_vertex_count];
+                            vertexCount:streams.earth_track_vertex_count];
             }
         }
         else
@@ -1496,16 +1472,16 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
             [encoder setVertexBytes:&earth_track_frame length:sizeof(earth_track_frame) atIndex:0];
             [encoder drawPrimitives:MTLPrimitiveTypeLine
                         vertexStart:0
-                        vertexCount:state_->earth_track_vertex_count];
+                        vertexCount:streams.earth_track_vertex_count];
         }
         [encoder setVertexBytes:&frame_ length:sizeof(frame_) atIndex:0];
     }
 
-    if (state_->track_vertex_count != 0 && state_->track_vertex_buffer.get())
+    if (streams.track_vertex_count != 0 && streams.track_vertex_buffer.get())
     {
         [encoder setRenderPipelineState:state_->orbit_pipeline.get()];
         [encoder setDepthStencilState:state_->depth_read_state.get()];
-        [encoder setVertexBuffer:state_->track_vertex_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.track_vertex_buffer.get() offset:0 atIndex:1];
         if (map_projection_)
         {
             for (int copy = -1; copy <= 1; ++copy)
@@ -1515,7 +1491,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
                 [encoder setVertexBytes:&track_frame length:sizeof(track_frame) atIndex:0];
                 [encoder drawPrimitives:MTLPrimitiveTypeLine
                             vertexStart:0
-                            vertexCount:state_->track_vertex_count];
+                            vertexCount:streams.track_vertex_count];
             }
         }
         else
@@ -1523,34 +1499,34 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
             [encoder setVertexBytes:&frame_ length:sizeof(frame_) atIndex:0];
             [encoder drawPrimitives:MTLPrimitiveTypeLine
                         vertexStart:0
-                        vertexCount:state_->track_vertex_count];
+                        vertexCount:streams.track_vertex_count];
         }
     }
 
-    if (state_->marker_count != 0 && state_->marker_buffer.get() && state_->marker_pipeline.get())
+    if (streams.marker_count != 0 && streams.marker_buffer.get() && state_->marker_pipeline.get())
     {
         [encoder setRenderPipelineState:state_->marker_pipeline.get()];
         [encoder setDepthStencilState:state_->depth_read_state.get()];
         [encoder setVertexBytes:&frame_ length:sizeof(frame_) atIndex:0];
-        [encoder setVertexBuffer:state_->marker_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.marker_buffer.get() offset:0 atIndex:1];
         [encoder drawPrimitives:MTLPrimitiveTypeLine
                     vertexStart:0
                     vertexCount:kSatViewMarkerVerticesPerInstance
-                  instanceCount:state_->marker_count];
+                  instanceCount:streams.marker_count];
     }
 
-    if (state_->surface_marker_count != 0
-        && state_->surface_marker_buffer.get()
+    if (streams.surface_marker_count != 0
+        && streams.surface_marker_buffer.get()
         && state_->marker_pipeline.get())
     {
         [encoder setRenderPipelineState:state_->marker_pipeline.get()];
         [encoder setDepthStencilState:state_->depth_read_state.get()];
         [encoder setVertexBytes:&frame_ length:sizeof(frame_) atIndex:0];
-        [encoder setVertexBuffer:state_->surface_marker_buffer.get() offset:0 atIndex:1];
+        [encoder setVertexBuffer:streams.surface_marker_buffer.get() offset:0 atIndex:1];
         [encoder drawPrimitives:MTLPrimitiveTypeLine
                     vertexStart:0
                     vertexCount:kSatViewMarkerVerticesPerInstance
-                  instanceCount:state_->surface_marker_count];
+                  instanceCount:streams.surface_marker_count];
     }
 
     if (ground_projection_ && ground_visible_)
@@ -1568,29 +1544,29 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     {
         [encoder setDepthStencilState:state_->depth_disabled_state.get()];
         [encoder setVertexBytes:&frame_ length:sizeof(frame_) atIndex:0];
-        if (state_->observatory_fill_triangle_count != 0
-            && state_->observatory_fill_buffer.get())
+        if (streams.observatory_fill_triangle_count != 0
+            && streams.observatory_fill_buffer.get())
         {
             [encoder setRenderPipelineState:state_->landscape_fill_pipeline.get()];
-            [encoder setVertexBuffer:state_->observatory_fill_buffer.get() offset:0 atIndex:1];
+            [encoder setVertexBuffer:streams.observatory_fill_buffer.get() offset:0 atIndex:1];
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle
                         vertexStart:0
                         vertexCount:3
-                      instanceCount:state_->observatory_fill_triangle_count];
+                      instanceCount:streams.observatory_fill_triangle_count];
         }
-        if (state_->observatory_rim_line_count != 0
-            && state_->observatory_rim_buffer.get())
+        if (streams.observatory_rim_line_count != 0
+            && streams.observatory_rim_buffer.get())
         {
             [encoder setRenderPipelineState:state_->landscape_rim_pipeline.get()];
-            [encoder setVertexBuffer:state_->observatory_rim_buffer.get() offset:0 atIndex:1];
+            [encoder setVertexBuffer:streams.observatory_rim_buffer.get() offset:0 atIndex:1];
             [encoder drawPrimitives:MTLPrimitiveTypeLine
                         vertexStart:0
                         vertexCount:2
-                      instanceCount:state_->observatory_rim_line_count];
+                      instanceCount:streams.observatory_rim_line_count];
         }
     }
     if (ground_projection_)
-        draw_labels(state_->cardinal_label_buffer.get(), state_->cardinal_label_count);
+        draw_labels(streams.cardinal_label_buffer.get(), streams.cardinal_label_count);
 
     [encoder endEncoding];
 

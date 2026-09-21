@@ -20,6 +20,7 @@
 #include <draxul/satview/satview_moon_ephemeris.h>
 #include <draxul/satview/satview_object_style.h>
 #include <draxul/satview/satview_scene_pass.h>
+#include <draxul/satview/satview_scene_composer.h>
 #include <draxul/satview/satview_sky_projection.h>
 #include <draxul/satview/satview_solar_system.h>
 #include <draxul/satview/satview_star_catalog.h>
@@ -389,28 +390,6 @@ glm::vec4 population_color(SatellitePopulation population, float alpha)
     return glm::vec4(0.72f, 0.78f, 0.86f, alpha);
 }
 
-glm::vec4 satellite_color(
-    OrbitClass orbit_class,
-    SatelliteObjectKind object_kind,
-    SatellitePopulation population,
-    std::uint32_t object_prefix_hash,
-    SatViewColorMode color_mode,
-    float alpha)
-{
-    switch (color_mode)
-    {
-    case SatViewColorMode::Population:
-        return population_color(population, alpha);
-    case SatViewColorMode::NamePrefix:
-        return satellite_prefix_color(object_prefix_hash, alpha);
-    case SatViewColorMode::OrbitClass:
-        return orbit_class_color(orbit_class, alpha);
-    case SatViewColorMode::ObjectType:
-        return object_kind_color(object_kind, alpha);
-    }
-    return satellite_prefix_color(object_prefix_hash, alpha);
-}
-
 glm::vec3 to_vec3(const glm::dvec3& value)
 {
     return glm::vec3(
@@ -592,11 +571,11 @@ void append_track_vertices(
             : 1.0f;
         const glm::vec4 color = selected
             ? glm::mix(
-                  satellite_color(track.orbit_class, track.object_kind, track.population,
+                  satview_satellite_color(track.orbit_class, track.object_kind, track.population,
                       track.object_prefix_hash, color_mode, 0.98f * fidelity_alpha),
                   glm::vec4(1.0f, 1.0f, 1.0f, 0.98f * fidelity_alpha),
                   0.38f)
-            : satellite_color(track.orbit_class, track.object_kind, track.population,
+            : satview_satellite_color(track.orbit_class, track.object_kind, track.population,
                   track.object_prefix_hash, color_mode, 0.62f * fidelity_alpha);
         const bool earth_ground_track = projection_mode == SatViewProjectionMode::Map
             && camera_pov == SatViewCameraPov::Earth;
@@ -827,77 +806,6 @@ float marker_interpolation_alpha(const SatViewSimulationSnapshot& snapshot, doub
 
     const double span = snapshot.next_simulation_seconds - snapshot.simulation_seconds;
     return static_cast<float>(std::clamp((render_seconds - snapshot.simulation_seconds) / span, 0.0, 1.0));
-}
-
-glm::dvec3 next_teme_position(const SatViewSimulationSnapshot& snapshot, std::size_t state_index)
-{
-    if (state_index >= snapshot.next_teme_positions_km.size())
-        return snapshot.states[state_index].teme_position_km;
-    return snapshot.next_teme_positions_km[state_index];
-}
-
-void append_marker_instances(
-    std::vector<SatViewMarkerInstance>& markers,
-    const SatViewSimulationSnapshot& snapshot,
-    const SatViewFilterState& filter,
-    std::string_view source_label,
-    std::optional<std::int64_t> selected_id,
-    SatViewColorMode color_mode,
-    std::size_t marker_limit,
-    std::optional<glm::dvec3> ground_observer_render_position,
-    bool ground_horizon_occlusion,
-    float ground_marker_scale)
-{
-    std::size_t visible_marker_index = 0;
-    for (std::size_t state_index = 0; state_index < snapshot.states.size(); ++state_index)
-    {
-        const SatellitePropagatedState& state = snapshot.states[state_index];
-        const bool selected = selected_id.has_value() && state.norad_catalog_id == *selected_id;
-        const bool visible = satellite_visible(filter, state, source_label);
-        if (!visible && !selected)
-            continue;
-
-        const glm::vec3 position0 = to_vec3(teme_position_to_render_earth_radii(state.teme_position_km));
-        if (ground_horizon_occlusion
-            && ground_observer_render_position.has_value()
-            && satview_ground_visibility_dot(
-                   glm::dvec3(position0),
-                   *ground_observer_render_position)
-                <= 0.0)
-        {
-            continue;
-        }
-
-        const bool under_marker_limit = marker_limit == 0 || visible_marker_index < marker_limit;
-        if (visible)
-            ++visible_marker_index;
-        if (!under_marker_limit && !selected)
-            continue;
-
-        const glm::vec3 position1 = to_vec3(
-            teme_position_to_render_earth_radii(next_teme_position(snapshot, state_index)));
-        const float range = glm::length(position0);
-        const float base_size = ground_observer_render_position.has_value()
-            ? satview_ground_marker_base_size(glm::dvec3(position0), *ground_observer_render_position)
-                * ground_marker_scale
-            : std::clamp(0.006f + range * 0.0022f, 0.008f, 0.026f);
-        const float size = selected ? base_size * 2.2f : base_size;
-        const float fidelity_alpha = state.solution_kind == OrbitSolutionKind::SatcatSummaryEstimate
-            ? 0.55f
-            : 1.0f;
-        const glm::vec4 color = selected
-            ? selected_marker_color(fidelity_alpha)
-            : glm::mix(
-                  satellite_color(state.orbit_class, state.object_kind, state.population,
-                      state.object_prefix_hash, color_mode, 0.95f * fidelity_alpha),
-                  glm::vec4(1.0f, 1.0f, 1.0f, 0.95f * fidelity_alpha),
-                  0.18f);
-        markers.push_back({
-            glm::vec4(position0, size),
-            glm::vec4(position1, selected ? 1.0f : 0.0f),
-            color,
-        });
-    }
 }
 
 float visible_scene_radius(
@@ -1679,23 +1587,24 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
     {
         if (marker_buffer_dirty_ || snapshot->generation != uploaded_marker_generation_)
         {
-            std::vector<SatViewMarkerInstance> markers;
+            SatViewMarkerComposeResult composed;
             if (show_markers)
             {
-                markers.reserve(snapshot->states.size());
-                append_marker_instances(
-                    markers,
-                    *snapshot,
-                    filter_,
-                    snapshot->source_label,
-                    selected_norad_catalog_id_,
-                    color_mode_,
-                    marker_satellite_limit_,
-                    ground_context,
-                    ground_horizon_occlusion_,
-                    ground_marker_scale_);
+                SatViewMarkerComposeRequest request;
+                request.generation = snapshot->generation;
+                request.states = snapshot->states;
+                request.next_teme_positions_km = snapshot->next_teme_positions_km;
+                request.filter = &filter_;
+                request.source_label = snapshot->source_label;
+                request.selected_id = selected_norad_catalog_id_;
+                request.color_mode = color_mode_;
+                request.marker_limit = marker_satellite_limit_;
+                request.ground_observer_render_position = ground_context;
+                request.ground_horizon_occlusion = ground_horizon_occlusion_;
+                request.ground_marker_scale = ground_marker_scale_;
+                composed = compose_satview_markers(request);
             }
-            scene_pass_->set_markers(markers);
+            scene_pass_->set_markers(composed.markers);
             uploaded_marker_generation_ = snapshot->generation;
             marker_buffer_dirty_ = false;
         }
@@ -4956,15 +4865,27 @@ void SatViewRuntime::select_nearest_object(const glm::ivec2& screen_pos)
     for (std::size_t state_index = 0; state_index < snapshot->states.size(); ++state_index)
     {
         const SatellitePropagatedState& state = snapshot->states[state_index];
-        if (!satellite_visible(filter_, state, source_label))
+        const bool selected = selected_norad_catalog_id_.has_value()
+            && state.norad_catalog_id == *selected_norad_catalog_id_;
+        const bool visible = satellite_visible(filter_, state, source_label);
+        if (!visible && !selected)
             continue;
-
-        if (marker_satellite_limit_ != 0 && visible_marker_index >= marker_satellite_limit_)
-            break;
-        ++visible_marker_index;
 
         glm::vec3 ndc;
         const glm::dvec3 teme_position = interpolated_teme_position(*snapshot, state_index, render_seconds);
+        const glm::vec3 world = to_vec3(teme_position_to_render_earth_radii(teme_position));
+        const bool above_horizon = !ground_projection
+            || !ground_horizon_occlusion_
+            || satview_ground_visibility_dot(glm::dvec3(world), ground_observer) > 0.0;
+        if (!satview_marker_is_eligible(
+                visible,
+                selected,
+                above_horizon,
+                marker_satellite_limit_,
+                visible_marker_index))
+        {
+            continue;
+        }
         if (projection_mode_ == SatViewProjectionMode::Map)
         {
             const glm::vec2 map_position = satview_map_position_from_teme(
@@ -4983,13 +4904,6 @@ void SatViewRuntime::select_nearest_object(const glm::ivec2& screen_pos)
         }
         else
         {
-            const glm::vec3 world = to_vec3(teme_position_to_render_earth_radii(teme_position));
-            if (ground_projection
-                && ground_horizon_occlusion_
-                && satview_ground_visibility_dot(glm::dvec3(world), ground_observer) <= 0.0)
-            {
-                continue;
-            }
             if (ground_projection)
             {
                 const glm::vec3 camera_direction = glm::mat3(view)
@@ -5016,7 +4930,6 @@ void SatViewRuntime::select_nearest_object(const glm::ivec2& screen_pos)
                 continue;
             }
         }
-
         const float sx = static_cast<float>(scene_viewport_.pixel_pos.x)
             + (ndc.x * 0.5f + 0.5f) * static_cast<float>(pixel_w);
         const float sy = static_cast<float>(scene_viewport_.pixel_pos.y)

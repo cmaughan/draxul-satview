@@ -31,6 +31,7 @@ endif()
 add_library(draxul-satview-core STATIC
     src/core/satview_catalog.cpp
     src/core/satview_catalog_container.cpp
+    src/core/satview_csv_tokenizer.cpp
     src/core/satview_config.cpp
     src/core/satview_constellation_boundary_catalog.cpp
     src/core/satview_filter.cpp
@@ -49,8 +50,12 @@ add_library(draxul-satview-core STATIC
 target_include_directories(draxul-satview-core PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/core ${stb_SOURCE_DIR})
 target_link_libraries(draxul-satview-core PUBLIC Draxul::PluginSupport::Types
     PRIVATE celestrak-sgp4 Draxul::PluginSupport::Performance)
+add_library(draxul-satview-core-test-internals INTERFACE)
+target_include_directories(draxul-satview-core-test-internals INTERFACE src/core)
+target_link_libraries(draxul-satview-core-test-internals INTERFACE draxul-satview-core)
 
 add_library(draxul-satview-scene STATIC
+    src/scene/satview_scene_composer.cpp
     src/scene/satview_constellation_catalog.cpp
     src/scene/satview_label_layout.cpp
     src/scene/satview_landscape.cpp

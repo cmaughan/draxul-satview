@@ -165,6 +165,14 @@ attribution files beside each generated asset.
 | `tests/` | C++ test suite and a Python catalog test |
 | `tools/` | Offline generators for star, constellation, ephemeris, and texture assets |
 | `docs/` | Product narrative ([satview.md](docs/satview.md)) and data-source ledger ([data-sources.md](docs/data-sources.md)) |
+
+Backend-neutral marker composition lives in `draxul-satview-scene`: immutable,
+generation-tagged requests produce the renderer's marker stream without a GPU,
+window, network, or clock. The runtime retains service/worker lifetime, frame
+scheduling, publication, panels, and interaction orchestration. CSV lexical
+rules are owned once by the core tokenizer; each catalogue parser retains its
+own diagnostics, numeric validation, and record policy. See [AGENTS.md](AGENTS.md)
+for the maintained ownership and threading rules.
 | `plans/` | Design documents and research notes |
 | `cmake/` | Pinned dependency fetching and test registration |
 
