@@ -1,3 +1,4 @@
+#include "satview_hdr_target_transaction.h"
 #include "satview_render_vk_math.h"
 #include <draxul/satview/satview_scene_pass.h>
 #include <draxul/satview/satview_texture_assets.h>
@@ -193,6 +194,12 @@ struct SatViewScenePass::State
         [[nodiscard]] int height() const { return shared.height; }
     };
 
+    struct HdrTargetSet
+    {
+        VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+        std::vector<HdrTargets> targets;
+    };
+
     VkDevice device = VK_NULL_HANDLE;
     VmaAllocator allocator = VK_NULL_HANDLE;
     VkRenderPass render_pass = VK_NULL_HANDLE;
@@ -359,14 +366,17 @@ struct SatViewScenePass::State
         marker_pipeline = VK_NULL_HANDLE;
     }
 
-    void destroy_hdr_targets()
+    void destroy_hdr_target_set(
+        std::vector<HdrTargets>& targets_to_destroy,
+        VkDescriptorPool& descriptor_pool_to_destroy)
     {
         if (device == VK_NULL_HANDLE || allocator == VK_NULL_HANDLE)
         {
-            hdr_targets.clear();
+            targets_to_destroy.clear();
+            descriptor_pool_to_destroy = VK_NULL_HANDLE;
             return;
         }
-        for (auto& targets : hdr_targets)
+        for (auto& targets : targets_to_destroy)
         {
             if (ImGui::GetCurrentContext())
             {
@@ -383,10 +393,15 @@ struct SatViewScenePass::State
             destroy_attachment(device, allocator, targets.msaa_difference);
             vkresources::destroy_hdr_scene_targets(device, allocator, targets.shared);
         }
-        hdr_targets.clear();
-        if (hdr_descriptor_pool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(device, hdr_descriptor_pool, nullptr);
-        hdr_descriptor_pool = VK_NULL_HANDLE;
+        targets_to_destroy.clear();
+        if (descriptor_pool_to_destroy != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, descriptor_pool_to_destroy, nullptr);
+        descriptor_pool_to_destroy = VK_NULL_HANDLE;
+    }
+
+    void destroy_hdr_targets()
+    {
+        destroy_hdr_target_set(hdr_targets, hdr_descriptor_pool);
     }
 
     void destroy_hdr_resources()
@@ -1052,100 +1067,127 @@ struct SatViewScenePass::State
             return true;
 
         vkDeviceWaitIdle(device);
-        destroy_hdr_targets();
-        hdr_targets.resize(frame_count);
+        return detail::publish_hdr_targets_transactionally<HdrTargetSet>(
+            [&](HdrTargetSet& candidate) {
+                candidate.targets.resize(frame_count);
 
-        VkDescriptorPoolSize pool_size{};
-        pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        pool_size.descriptorCount = frame_count * 3u;
-        VkDescriptorPoolCreateInfo pool_ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pool_ci.maxSets = frame_count * 3u;
-        pool_ci.poolSizeCount = 1;
-        pool_ci.pPoolSizes = &pool_size;
-        if (vkCreateDescriptorPool(device, &pool_ci, nullptr, &hdr_descriptor_pool) != VK_SUCCESS)
-        {
-            destroy_hdr_targets();
-            return false;
-        }
+                VkDescriptorPoolSize pool_size{};
+                pool_size.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                pool_size.descriptorCount = frame_count * 3u;
+                VkDescriptorPoolCreateInfo pool_ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+                pool_ci.maxSets = frame_count * 3u;
+                pool_ci.poolSizeCount = 1;
+                pool_ci.pPoolSizes = &pool_size;
+                if (vkCreateDescriptorPool(
+                        device, &pool_ci, nullptr, &candidate.descriptor_pool)
+                    != VK_SUCCESS)
+                    return false;
 
-        for (auto& targets : hdr_targets)
-        {
-            // The MSAA colour / depth / resolve / tone-mapped attachments and
-            // their two framebuffers are the shared set. Only SatView's
-            // MSAA-difference debug target is built here.
-            std::string error;
-            if (!hdr_pipeline.create_targets(device, allocator, width, height, targets.shared, error))
-            {
-                DRAXUL_LOG_ERROR(LogCategory::Renderer, "SatView: %s", error.c_str());
+                return detail::build_hdr_target_frames(frame_count, std::nullopt,
+                    [&](std::size_t target_index, detail::HdrTargetBuildStage stage) {
+                        auto& targets = candidate.targets[target_index];
+                        switch (stage)
+                        {
+                        case detail::HdrTargetBuildStage::SceneTargets:
+                        {
+                            // The MSAA colour / depth / resolve / tone-mapped
+                            // attachments and their two framebuffers are the
+                            // shared set. Only SatView's MSAA-difference debug
+                            // target is built here.
+                            std::string error;
+                            if (hdr_pipeline.create_targets(
+                                    device, allocator, width, height, targets.shared, error))
+                                return true;
+                            DRAXUL_LOG_ERROR(
+                                LogCategory::Renderer, "SatView: %s", error.c_str());
+                            return false;
+                        }
+                        case detail::HdrTargetBuildStage::DebugAttachment:
+                            return create_attachment(device, allocator, width, height,
+                                VK_FORMAT_R8G8B8A8_UNORM,
+                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 0,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                "satview.hdr.msaa-difference", targets.msaa_difference);
+                        case detail::HdrTargetBuildStage::DebugFramebuffer:
+                        {
+                            VkFramebufferCreateInfo debug_fb_ci{
+                                VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO
+                            };
+                            debug_fb_ci.renderPass = debug_render_pass;
+                            debug_fb_ci.attachmentCount = 1;
+                            debug_fb_ci.pAttachments = &targets.msaa_difference.view;
+                            debug_fb_ci.width = static_cast<uint32_t>(width);
+                            debug_fb_ci.height = static_cast<uint32_t>(height);
+                            debug_fb_ci.layers = 1;
+                            return vkCreateFramebuffer(device, &debug_fb_ci, nullptr,
+                                       &targets.debug_framebuffer)
+                                == VK_SUCCESS;
+                        }
+                        case detail::HdrTargetBuildStage::DescriptorSets:
+                        {
+                            std::array<VkDescriptorSetLayout, 3> layouts = {
+                                post_descriptor_set_layout,
+                                post_descriptor_set_layout,
+                                debug_descriptor_set_layout,
+                            };
+                            std::array<VkDescriptorSet, 3> sets{};
+                            VkDescriptorSetAllocateInfo alloc_ci{
+                                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO
+                            };
+                            alloc_ci.descriptorPool = candidate.descriptor_pool;
+                            alloc_ci.descriptorSetCount = multisampled ? 3u : 2u;
+                            alloc_ci.pSetLayouts = layouts.data();
+                            if (vkAllocateDescriptorSets(device, &alloc_ci, sets.data())
+                                != VK_SUCCESS)
+                                return false;
+                            targets.post_descriptor_set = sets[0];
+                            targets.present_descriptor_set = sets[1];
+                            targets.debug_descriptor_set =
+                                multisampled ? sets[2] : VK_NULL_HANDLE;
+
+                            std::array<VkDescriptorImageInfo, 3> image_infos{};
+                            image_infos[0] = { hdr_sampler, targets.shared.scene_hdr.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                            image_infos[1] = { hdr_sampler,
+                                targets.shared.scene_final_unorm_view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                            image_infos[2] = { hdr_sampler, targets.shared.scene_msaa.view,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                            std::array<VkWriteDescriptorSet, 3> writes{};
+                            const uint32_t write_count = multisampled ? 3u : 2u;
+                            for (uint32_t i = 0; i < write_count; ++i)
+                            {
+                                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                                writes[i].dstSet = sets[i];
+                                writes[i].dstBinding = 0;
+                                writes[i].descriptorCount = 1;
+                                writes[i].descriptorType =
+                                    VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                                writes[i].pImageInfo = &image_infos[i];
+                            }
+                            vkUpdateDescriptorSets(
+                                device, write_count, writes.data(), 0, nullptr);
+                            return true;
+                        }
+                        }
+                        return false;
+                    });
+            },
+            [&](const HdrTargetSet& candidate) {
+                return candidate.descriptor_pool != VK_NULL_HANDLE
+                    && candidate.targets.size() == frame_count
+                    && std::ranges::all_of(candidate.targets, target_complete);
+            },
+            [&](HdrTargetSet& candidate) {
+                destroy_hdr_target_set(candidate.targets, candidate.descriptor_pool);
+            },
+            [&](HdrTargetSet&& candidate) {
                 destroy_hdr_targets();
-                return false;
-            }
-            if (!create_attachment(device, allocator, width, height,
-                    VK_FORMAT_R8G8B8A8_UNORM,
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, 0,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    "satview.hdr.msaa-difference", targets.msaa_difference))
-            {
-                destroy_hdr_targets();
-                return false;
-            }
-
-            VkFramebufferCreateInfo debug_fb_ci{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-            debug_fb_ci.renderPass = debug_render_pass;
-            debug_fb_ci.attachmentCount = 1;
-            debug_fb_ci.pAttachments = &targets.msaa_difference.view;
-            debug_fb_ci.width = static_cast<uint32_t>(width);
-            debug_fb_ci.height = static_cast<uint32_t>(height);
-            debug_fb_ci.layers = 1;
-            if (vkCreateFramebuffer(device, &debug_fb_ci, nullptr, &targets.debug_framebuffer) != VK_SUCCESS)
-            {
-                destroy_hdr_targets();
-                return false;
-            }
-
-            std::array<VkDescriptorSetLayout, 3> layouts = {
-                post_descriptor_set_layout,
-                post_descriptor_set_layout,
-                debug_descriptor_set_layout,
-            };
-            std::array<VkDescriptorSet, 3> sets{};
-            VkDescriptorSetAllocateInfo alloc_ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-            alloc_ci.descriptorPool = hdr_descriptor_pool;
-            alloc_ci.descriptorSetCount = multisampled ? 3u : 2u;
-            alloc_ci.pSetLayouts = layouts.data();
-            if (vkAllocateDescriptorSets(device, &alloc_ci, sets.data()) != VK_SUCCESS)
-            {
-                destroy_hdr_targets();
-                return false;
-            }
-            targets.post_descriptor_set = sets[0];
-            targets.present_descriptor_set = sets[1];
-            targets.debug_descriptor_set = multisampled ? sets[2] : VK_NULL_HANDLE;
-
-            std::array<VkDescriptorImageInfo, 3> image_infos{};
-            image_infos[0] = { hdr_sampler, targets.shared.scene_hdr.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            image_infos[1] = { hdr_sampler, targets.shared.scene_final_unorm_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            image_infos[2] = { hdr_sampler, targets.shared.scene_msaa.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-            std::array<VkWriteDescriptorSet, 3> writes{};
-            const uint32_t write_count = multisampled ? 3u : 2u;
-            for (uint32_t i = 0; i < write_count; ++i)
-            {
-                writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = sets[i];
-                writes[i].dstBinding = 0;
-                writes[i].descriptorCount = 1;
-                writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                writes[i].pImageInfo = &image_infos[i];
-            }
-            vkUpdateDescriptorSets(device, write_count, writes.data(), 0, nullptr);
-        }
-        if (!std::ranges::all_of(hdr_targets, target_complete))
-        {
-            destroy_hdr_targets();
-            return false;
-        }
-        return true;
+                hdr_descriptor_pool = candidate.descriptor_pool;
+                candidate.descriptor_pool = VK_NULL_HANDLE;
+                hdr_targets = std::move(candidate.targets);
+            });
     }
 
     bool ensure_pipelines(VkDevice new_device, VkRenderPass new_render_pass)
