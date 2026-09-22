@@ -42,7 +42,8 @@ view/selection and ImGui responsibilities inside the host target, leaving
 
 ## Cross-platform validation
 
-- [ ] Configure/build SatView ON and OFF on Windows and macOS.
+- [x] Configure/build SatView ON and OFF on Windows.
+- [ ] Configure/build SatView ON and OFF on macOS.
 - [x] Verify Vulkan and Metal consume the unchanged scene records and revision semantics.
 - [x] Ensure composer contains no HTTP, ImGui, SDL, Vulkan, Metal, or GPU-resource ownership.
 - [x] Run the host on Metal and validate the Vulkan runtime on Windows.
@@ -79,3 +80,41 @@ out of scope.
   smoke check.
 - 2026-09-22 Windows Vulkan: the SatView developer render exported a valid
   960x640 frame and the result was visually inspected.
+- A fresh isolated MSVC/Ninja `build-validation/satview-on-msvc` cache was
+  configured with `DRAXUL_ENABLE_SATVIEW=ON` and every other product OFF.
+  Building `draxul`, `draxul-satview-scene`, and `draxul-test-satview`
+  passed; `ctest -L satview --parallel 8` then passed 3/3 entries in 37.60
+  seconds.
+- A separate `build-validation/products-off-msvc` cache was configured with
+  both `DRAXUL_ENABLE_SATVIEW=OFF` and `DRAXUL_ENABLE_MEGACITY=OFF`, with
+  every other product also OFF. Building `draxul` passed, and target
+  enumeration confirmed that no SatView target was present.
+
+## macOS closeout
+
+Run these from the Draxul root on macOS, retaining separate isolated caches for
+the explicit feature matrix:
+
+```bash
+cmake -S . -B build-mac-satview-on -G "Unix Makefiles" \
+  -DCMAKE_BUILD_TYPE=Debug -DDRAXUL_ENABLE_RENDER_TESTS=ON \
+  -DDRAXUL_ENABLE_MEGACITY=OFF -DDRAXUL_ENABLE_SATVIEW=ON \
+  -DDRAXUL_ENABLE_SCOREVIEW=OFF -DDRAXUL_ENABLE_PCBVIEW=OFF \
+  -DDRAXUL_ENABLE_REZONALITY=OFF
+cmake --build build-mac-satview-on --target draxul \
+  draxul-satview-scene draxul-test-satview --parallel 8
+ctest --test-dir build-mac-satview-on -L satview --output-on-failure --parallel 8
+
+cmake -S . -B build-mac-products-off -G "Unix Makefiles" \
+  -DCMAKE_BUILD_TYPE=Debug -DDRAXUL_ENABLE_RENDER_TESTS=ON \
+  -DDRAXUL_ENABLE_MEGACITY=OFF -DDRAXUL_ENABLE_SATVIEW=OFF \
+  -DDRAXUL_ENABLE_SCOREVIEW=OFF -DDRAXUL_ENABLE_PCBVIEW=OFF \
+  -DDRAXUL_ENABLE_REZONALITY=OFF
+cmake --build build-mac-products-off --target draxul --parallel 8
+
+python3 do.py smoke debug --skip-build
+```
+
+Open a SatView pane on Metal and confirm map/ground transitions, selection,
+labels, and dirty-frame updates before ticking the remaining macOS box and
+moving this card to done.
