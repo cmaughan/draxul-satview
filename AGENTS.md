@@ -13,7 +13,12 @@ Read the repository-root `CLAUDE.md` before changing this product.
   publication. A worker remains in flight until the main thread joins it and
   consumes its result.
 - `draxul-satview-runtime` owns main-thread publication, service and simulation
-  lifetime, view/selection orchestration, panels, and frame scheduling.
+  lifetime, application of device-free view/selection transitions, panels, and
+  frame scheduling. `SatViewViewController` owns the pure POV, map/ground, and
+  mutually-exclusive selection transition policy; it owns no camera, worker,
+  ImGui, window, or renderer resources. `satview_runtime_panels.cpp` owns the
+  pane-local ImGui windows and object trees; keep panel-only changes out of the
+  lifecycle/frame orchestrator in `satview_runtime.cpp`.
 - Vulkan and Metal renderers consume the same scene records. Mutable stream
   buffers are frame-slot-owned and may only be rewritten after that slot has
   returned to the renderer.

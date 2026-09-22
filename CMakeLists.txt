@@ -99,7 +99,9 @@ endif()
 add_library(draxul-satview-runtime STATIC
     src/runtime/satview_config_io.cpp
     src/runtime/satview_runtime.cpp
-    src/runtime/satview_simulation_worker.cpp)
+    src/runtime/satview_runtime_panels.cpp
+    src/runtime/satview_simulation_worker.cpp
+    src/runtime/satview_view_controller.cpp)
 target_include_directories(draxul-satview-runtime PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/runtime)
 # The plugin ImGui target is PUBLIC because satview_runtime.h owns a
 # PluginImGuiContext (the shared context/lifecycle from plugins/support/imgui).

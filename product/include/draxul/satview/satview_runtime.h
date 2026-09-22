@@ -31,6 +31,7 @@ namespace draxul::satview
 class SatViewScenePass;
 class SatViewSimulationWorker;
 class SatViewCloudService;
+class SatViewViewController;
 class Camera;
 class Manipulator;
 struct SatViewStarInstance;
@@ -41,6 +42,7 @@ struct SatViewSurfaceCatalog;
 struct SatViewSurfaceObject;
 struct SatViewSolarSystemBody;
 struct SatViewSimulationSnapshot;
+struct SatViewSelectionState;
 
 class SatViewRuntimeCallbacks
 {
@@ -202,6 +204,7 @@ private:
     bool select_nearest_natural_body(const glm::ivec2& screen_pos, bool enter_body);
     bool select_nearest_surface_object(const glm::ivec2& screen_pos);
     void center_selected_surface_object(double simulation_seconds);
+    void apply_selection(const SatViewSelectionState& selection);
 
     TestHooks test_hooks_;
     SatViewRuntimeCallbacks* callbacks_ = nullptr;
@@ -211,6 +214,7 @@ private:
     draxul::PluginRuntimeViewport viewport_;
     draxul::PluginRuntimeViewport scene_viewport_;
     std::shared_ptr<SatViewScenePass> scene_pass_;
+    std::unique_ptr<SatViewViewController> view_controller_;
     SatViewCatalogService catalog_service_;
     std::unique_ptr<SatViewCloudService> cloud_service_;
     std::unique_ptr<SatViewSimulationWorker> simulation_worker_;

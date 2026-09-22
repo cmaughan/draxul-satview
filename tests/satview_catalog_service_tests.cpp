@@ -14,6 +14,12 @@
 #include <thread>
 #include <utility>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 using draxul::satview::SatViewCatalogService;
 
 namespace
@@ -195,6 +201,56 @@ TEST_CASE("SatView macOS cache replacement failure keeps an existing regular fil
     CHECK_FALSE(published);
     CHECK(read_file(destination) == "last valid cache");
     CHECK(error.find("failed to replace") != std::string::npos);
+}
+#endif
+
+#ifdef _WIN32
+TEST_CASE("SatView Windows cache replacement failure keeps an existing regular file",
+    "[satview][catalog][service][cache][windows]")
+{
+    draxul::tests::TempDir temp("satview-cache-windows-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    // Denying FILE_SHARE_DELETE forces the production MoveFileExW replacement
+    // to fail while the existing destination remains open and readable.
+    const HANDLE locked_destination = CreateFileW(
+        destination.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    REQUIRE(locked_destination != INVALID_HANDLE_VALUE);
+
+    std::error_code native_replace_error;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            native_replace_error = draxul::satview::detail::replace_cache_file_atomically(
+                temporary, target);
+            return native_replace_error;
+        });
+    REQUIRE(CloseHandle(locked_destination) != 0);
+
+    INFO("MoveFileExW error: " << native_replace_error.message());
+    CHECK_FALSE(published);
+    CHECK((native_replace_error.value() == ERROR_SHARING_VIOLATION
+        || native_replace_error.value() == ERROR_ACCESS_DENIED));
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+
+    size_t temporary_files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path))
+    {
+        if (entry.path().filename().string().starts_with("catalog.json.tmp."))
+            ++temporary_files;
+    }
+    CHECK(temporary_files == 0);
 }
 #endif
 
