@@ -66,12 +66,16 @@ target_link_libraries(draxul-satview-scene PUBLIC
     PRIVATE Draxul::PluginSupport::Performance)
 
 add_library(draxul-satview-services STATIC
+    src/services/satview_cache_publication.cpp
     src/services/satview_catalog_service.cpp
     src/services/satview_cloud_service.cpp)
 target_include_directories(draxul-satview-services PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/services)
 target_link_libraries(draxul-satview-services PUBLIC
     draxul-satview-core Draxul::PluginSupport::Http
     PRIVATE Draxul::PluginSupport::Performance)
+add_library(draxul-satview-services-test-internals INTERFACE)
+target_include_directories(draxul-satview-services-test-internals INTERFACE src/services)
+target_link_libraries(draxul-satview-services-test-internals INTERFACE draxul-satview-services)
 
 if(APPLE)
     set(SATVIEW_RENDERER_SOURCE src/render/satview_render.mm)

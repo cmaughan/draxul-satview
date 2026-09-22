@@ -3,8 +3,9 @@
 #include <draxul/log.h>
 #include <draxul/perf_timing.h>
 
+#include "satview_cache_publication.h"
+
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -15,11 +16,6 @@
 #include <system_error>
 #include <utility>
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#endif
-
 namespace draxul::satview
 {
 
@@ -28,7 +24,6 @@ namespace
 
 constexpr const char* kDefaultCelestrakGroup = "active";
 constexpr std::size_t kMaxCatalogResponseBytes = 64 * 1024 * 1024;
-std::atomic<std::uint64_t> g_cache_temporary_sequence{ 0 };
 std::mutex g_cache_publication_mutex;
 
 std::string to_lower_ascii(std::string_view text)
@@ -99,55 +94,6 @@ std::filesystem::path platform_cache_root()
 }
 
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error);
-
-bool write_text_atomic(const std::filesystem::path& path, std::string_view content, std::string& error)
-{
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec)
-    {
-        error = "failed to create cache directory: " + ec.message();
-        return false;
-    }
-
-    const auto timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
-    const std::filesystem::path tmp = path.string() + ".tmp."
-        + std::to_string(timestamp) + "."
-        + std::to_string(g_cache_temporary_sequence.fetch_add(1, std::memory_order_relaxed));
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
-        {
-            error = "failed to open " + tmp.string();
-            return false;
-        }
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out.good())
-        {
-            error = "failed to write " + tmp.string();
-            return false;
-        }
-    }
-
-#ifdef _WIN32
-    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
-#else
-    std::filesystem::rename(tmp, path, ec);
-#endif
-    if (ec)
-    {
-        // Never remove the destination as a replacement fallback: another
-        // service may just have published it. Keep the last valid cache and
-        // discard only this writer's private temporary file.
-        const std::string replace_error = ec.message();
-        std::error_code cleanup_ec;
-        std::filesystem::remove(tmp, cleanup_ec);
-        error = "failed to replace " + path.string() + ": " + replace_error;
-        return false;
-    }
-    return true;
-}
 
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error)
 {
@@ -312,7 +258,7 @@ bool write_cache_files(
     // process. Unique temporaries protect individual files; this lock prevents
     // two SatView service instances from interleaving the pair.
     std::lock_guard publication_lock(g_cache_publication_mutex);
-    if (!write_text_atomic(payload_path, raw_payload, error))
+    if (!detail::write_cache_text_atomically(payload_path, raw_payload, error))
         return false;
 
     SatViewCatalogService::CacheMetadata meta;
@@ -323,7 +269,7 @@ bool write_cache_files(
     meta.skipped_records = catalog.skipped_records;
     meta.epoch_min = epoch_range_min(catalog);
     meta.epoch_max = epoch_range_max(catalog);
-    return write_text_atomic(meta_path, serialize_metadata(meta), error);
+    return detail::write_cache_text_atomically(meta_path, serialize_metadata(meta), error);
 }
 
 template <typename ParseFunction>

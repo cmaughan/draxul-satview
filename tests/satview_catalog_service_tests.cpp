@@ -1,5 +1,6 @@
 #include "temp_dir.h"
 #include "test_support.h"
+#include "satview_cache_publication.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <draxul/satview/satview_catalog_service.h>
@@ -7,6 +8,8 @@
 #include <chrono>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <utility>
@@ -104,7 +107,96 @@ SatViewCatalogService::FetchFunction payload_fetch(
     };
 }
 
+void write_file(const std::filesystem::path& path, std::string_view content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.is_open());
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    REQUIRE(out.good());
+}
+
+std::string read_file(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.is_open());
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 } // namespace
+
+TEST_CASE("SatView cache publication preserves the destination when replacement fails",
+    "[satview][catalog][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-cache-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    std::filesystem::path attempted_temporary;
+    std::filesystem::path attempted_destination;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            attempted_temporary = temporary;
+            attempted_destination = target;
+            return std::make_error_code(std::errc::permission_denied);
+        });
+
+    CHECK_FALSE(published);
+    CHECK(attempted_destination == destination);
+    CHECK(attempted_temporary.parent_path() == destination.parent_path());
+    CHECK(attempted_temporary.filename().string().starts_with("catalog.json.tmp."));
+    CHECK_FALSE(std::filesystem::exists(attempted_temporary));
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+}
+
+#ifdef __APPLE__
+TEST_CASE("SatView macOS cache replacement failure keeps an existing regular file",
+    "[satview][catalog][service][cache][macos]")
+{
+    draxul::tests::TempDir temp("satview-cache-macos-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    const auto original_permissions = std::filesystem::status(temp.path).permissions();
+    std::error_code restrict_error;
+    std::error_code restore_error;
+    std::error_code native_replace_error;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            std::filesystem::permissions(
+                temp.path,
+                std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                std::filesystem::perm_options::replace,
+                restrict_error);
+            if (!restrict_error)
+            {
+                native_replace_error = draxul::satview::detail::replace_cache_file_atomically(
+                    temporary, target);
+            }
+            std::filesystem::permissions(
+                temp.path,
+                original_permissions,
+                std::filesystem::perm_options::replace,
+                restore_error);
+            return restrict_error ? restrict_error : native_replace_error;
+        });
+
+    REQUIRE_FALSE(restrict_error);
+    REQUIRE_FALSE(restore_error);
+    REQUIRE(native_replace_error);
+    CHECK_FALSE(published);
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+}
+#endif
 
 TEST_CASE("SatView catalog service builds encoded CelesTrak group URLs", "[satview][catalog][service]")
 {

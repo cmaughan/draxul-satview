@@ -6,6 +6,7 @@ draxul_add_test_target(
     draxul-test-satview satview 2 ${_satview_test_sources})
 target_link_libraries(draxul-test-satview PRIVATE
     draxul-satview-core-test-internals
+    draxul-satview-services-test-internals
     draxul-satview-runtime-test-internals
     draxul-satview-renderer-test-internals
     Draxul::PluginSupport::Config
