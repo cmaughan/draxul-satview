@@ -11,7 +11,7 @@ target_link_libraries(draxul-test-satview PRIVATE
     draxul-satview-renderer-test-internals
     Draxul::PluginSupport::Config
     SDL3::SDL3
-    draxul-host
+    draxul-host-api
     draxul-renderer)
 target_compile_definitions(draxul-test-satview PRIVATE
     DRAXUL_ENABLE_SATVIEW
