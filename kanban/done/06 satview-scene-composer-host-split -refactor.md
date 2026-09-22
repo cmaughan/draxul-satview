@@ -43,7 +43,7 @@ view/selection and ImGui responsibilities inside the host target, leaving
 ## Cross-platform validation
 
 - [x] Configure/build SatView ON and OFF on Windows.
-- [ ] Configure/build SatView ON and OFF on macOS.
+- [x] Configure/build SatView ON and OFF on macOS.
 - [x] Verify Vulkan and Metal consume the unchanged scene records and revision semantics.
 - [x] Ensure composer contains no HTTP, ImGui, SDL, Vulkan, Metal, or GPU-resource ownership.
 - [x] Run the host on Metal and validate the Vulkan runtime on Windows.
@@ -92,29 +92,45 @@ out of scope.
 
 ## macOS closeout
 
-Run these from the Draxul root on macOS, retaining separate isolated caches for
+Completed on 2026-09-22 from the Draxul root with separate isolated caches for
 the explicit feature matrix:
 
 ```bash
-cmake -S . -B build-mac-satview-on -G "Unix Makefiles" \
+env CCACHE_DIR=/tmp/draxul-ccache cmake -S . -B build-mac-satview-on -G "Unix Makefiles" \
   -DCMAKE_BUILD_TYPE=Debug -DDRAXUL_ENABLE_RENDER_TESTS=ON \
   -DDRAXUL_ENABLE_MEGACITY=OFF -DDRAXUL_ENABLE_SATVIEW=ON \
   -DDRAXUL_ENABLE_SCOREVIEW=OFF -DDRAXUL_ENABLE_PCBVIEW=OFF \
-  -DDRAXUL_ENABLE_REZONALITY=OFF
-cmake --build build-mac-satview-on --target draxul \
+  -DDRAXUL_ENABLE_REZONALITY=OFF -DDRAXUL_REQUIRE_ENABLED_PLUGINS=ON \
+  -DFETCHCONTENT_FULLY_DISCONNECTED=ON \
+  -DFETCHCONTENT_BASE_DIR="$PWD/build-mac-satview-on/_deps"
+env CCACHE_DIR=/tmp/draxul-ccache cmake --build build-mac-satview-on --target draxul \
   draxul-satview-scene draxul-test-satview --parallel 8
 ctest --test-dir build-mac-satview-on -L satview --output-on-failure --parallel 8
 
-cmake -S . -B build-mac-products-off -G "Unix Makefiles" \
-  -DCMAKE_BUILD_TYPE=Debug -DDRAXUL_ENABLE_RENDER_TESTS=ON \
-  -DDRAXUL_ENABLE_MEGACITY=OFF -DDRAXUL_ENABLE_SATVIEW=OFF \
-  -DDRAXUL_ENABLE_SCOREVIEW=OFF -DDRAXUL_ENABLE_PCBVIEW=OFF \
-  -DDRAXUL_ENABLE_REZONALITY=OFF
-cmake --build build-mac-products-off --target draxul --parallel 8
+env CCACHE_DIR=/tmp/draxul-ccache cmake --build build-mac-products-off \
+  --target draxul --parallel 8
+cmake --build build-mac-products-off --target help | rg -i 'draxul-satview|satview'
+find build-mac-products-off/draxul.app -iname '*satview*' -print
 
-python3 do.py smoke debug --skip-build
+build-mac-satview-on/draxul.app/Contents/MacOS/draxul --console \
+  --render-test "$PWD/tests/render/satview-plugin.toml" \
+  --show-render-test-window --export-render-test /tmp/draxul-satview-macos.bmp
+
+build-mac-satview-on/draxul.app/Contents/MacOS/draxul --console --smoke-test
 ```
 
-Open a SatView pane on Metal and confirm map/ground transitions, selection,
-labels, and dirty-frame updates before ticking the remaining macOS box and
-moving this card to done.
+- The isolated ON configure used the existing disconnected dependency sources,
+  built `draxul`, `draxul-satview-scene`, and `draxul-test-satview`, and
+  `ctest -L satview` passed 3/3 entries in 3.40 seconds.
+- The existing products-OFF cache built `draxul`; target enumeration found no
+  SatView build target and the application bundle contained no SatView payload.
+- The Metal developer render, bounded by the command runner, used
+  `tests/render/satview-plugin.toml`, exited successfully on Apple M5 in 7.20
+  seconds, exported a valid 960x640 frame, and the capture was visually
+  inspected. The matching ON-cache smoke exited successfully in 5.16 seconds.
+- The passing controller tests cover map dragging, ground entry, POV changes,
+  and mutually exclusive selection transitions. The passing host and label
+  tests cover the integrated offline lifecycle, selection clearing, frame
+  request settling and dirty revisions, and label layout. Together with the
+  inspected Metal frame, these provide the non-interactive transition and
+  rendering evidence for the macOS closeout.
