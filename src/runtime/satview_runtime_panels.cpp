@@ -984,10 +984,17 @@ void SatViewRuntime::render_control_panel(const SatViewSimulationSnapshot* snaps
 
     if (ImGui::Begin(kSatViewViewWindowName, nullptr, flags))
     {
-        if (ImGui::Button(paused_ ? "Resume" : "Pause"))
+        const bool pause_clicked = ImGui::Button(paused_ ? "Resume" : "Pause");
+        if (test_hooks_.active)
         {
-            paused_ = !paused_;
-            sync_simulation_controls();
+            const ImVec2 min = ImGui::GetItemRectMin();
+            const ImVec2 max = ImGui::GetItemRectMax();
+            test_hooks_.pause_button_bounds = { min.x, min.y, max.x, max.y };
+            test_hooks_.pause_button_rect_ready = true;
+        }
+        if (pause_clicked)
+        {
+            set_paused(!paused_);
             changed = true;
         }
         ImGui::SameLine();

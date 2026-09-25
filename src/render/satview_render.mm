@@ -84,6 +84,10 @@ struct SatViewScenePass::State
         ObjCRef<id<MTLBuffer>> cardinal_label_buffer;
         ObjCRef<id<MTLBuffer>> observatory_fill_buffer;
         ObjCRef<id<MTLBuffer>> observatory_rim_buffer;
+        // Frame-slot retention keeps prior revisions alive until the renderer
+        // reuses this slot after its command buffer completes.
+        ObjCRef<id<MTLTexture>> live_cloud_texture;
+        ObjCRef<id<MTLTexture>> label_texture;
         NSUInteger track_vertex_count = 0;
         NSUInteger earth_track_vertex_count = 0;
         NSUInteger marker_count = 0;
@@ -218,10 +222,11 @@ struct SatViewScenePass::State
         if (!image.valid() || revision == uploaded_label_atlas_revision)
             return image.valid();
         LoadedTextureImage upload_image{ image.width, image.height, image.rgba };
-        label_texture.reset(create_texture(
-            device.get(), upload_image, MTLPixelFormatRGBA8Unorm));
-        if (!label_texture.get())
+        id<MTLTexture> replacement = create_texture(
+            device.get(), upload_image, MTLPixelFormatRGBA8Unorm);
+        if (!replacement)
             return false;
+        label_texture.reset(replacement);
         uploaded_label_atlas_revision = revision;
         return true;
     }
@@ -230,23 +235,10 @@ struct SatViewScenePass::State
     {
         if (revision == uploaded_cloud_revision)
             return true;
-        id<MTLTexture> texture = live_cloud_texture.get();
-        if (!texture
-            || static_cast<NSUInteger>(image.width) != texture.width
-            || static_cast<NSUInteger>(image.height) != texture.height)
-        {
-            live_cloud_texture.reset(create_texture(device.get(), image));
-            if (!live_cloud_texture.get())
-                return false;
-            uploaded_cloud_revision = revision;
-            return true;
-        }
-
-        const MTLRegion region = MTLRegionMake2D(0, 0, texture.width, texture.height);
-        [texture replaceRegion:region
-                   mipmapLevel:0
-                     withBytes:image.rgba.data()
-                   bytesPerRow:static_cast<NSUInteger>(image.width * 4)];
+        id<MTLTexture> replacement = create_texture(device.get(), image);
+        if (!replacement)
+            return false;
+        live_cloud_texture.reset(replacement);
         uploaded_cloud_revision = revision;
         return true;
     }
@@ -1033,6 +1025,8 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         state_->ensure_context_body_texture(context_body_);
     if (label_atlas_)
         state_->ensure_label_texture(*label_atlas_, label_atlas_revision_);
+    streams.live_cloud_texture.reset(state_->live_cloud_texture.get());
+    streams.label_texture.reset(state_->label_texture.get());
     state_->ensure_buffer(
         metal_ctx->device(),
         track_vertices_,

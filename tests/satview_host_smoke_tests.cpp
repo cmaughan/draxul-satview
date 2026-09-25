@@ -21,13 +21,70 @@
 
 #include <draxul/config_document.h>
 #include <draxul/host.h>
+#include <draxul/plugin_adapter.h>
+#include <draxul/plugin_gpu_imgui.h>
 #include <draxul/satview/satview_config.h>
+
+
+#include <cstring>
 
 using namespace draxul;
 using namespace draxul::satview;
 
 namespace
 {
+
+struct FakeUiStyleService
+{
+    std::string font_path;
+    float size_pixels = 16.0f;
+    std::uint64_t generation = 1;
+
+    DraxulPluginHostApiV2 host_api()
+    {
+        DraxulPluginHostApiV2 host{};
+        host.struct_size = sizeof(host);
+        host.abi_version = DRAXUL_PLUGIN_ABI_VERSION;
+        host.host_context = this;
+        host.query_service = &query_service;
+        return host;
+    }
+
+    static int32_t query_service(void* context, const char* id, size_t length,
+        uint32_t version, void* table, size_t table_size)
+    {
+        if (std::string_view(id, length) != DRAXUL_PLUGIN_UI_STYLE_SERVICE_ID
+            || version != DRAXUL_PLUGIN_UI_STYLE_SERVICE_VERSION
+            || table_size < sizeof(DraxulPluginUiStyleServiceV2))
+            return 0;
+        auto* service = static_cast<DraxulPluginUiStyleServiceV2*>(table);
+        *service = { sizeof(*service), version, context, &get_recommended_font };
+        return 1;
+    }
+
+    static int32_t get_recommended_font(void* context, char* path,
+        size_t* size, float* pixels, float* scale, uint64_t* generation)
+    {
+        auto& style = *static_cast<FakeUiStyleService*>(context);
+        const size_t required = style.font_path.size() + 1;
+        *pixels = style.size_pixels;
+        *scale = 1.0f;
+        *generation = style.generation;
+        if (!path)
+        {
+            *size = required;
+            return 1;
+        }
+        if (*size < required)
+        {
+            *size = required;
+            return 0;
+        }
+        std::memcpy(path, style.font_path.c_str(), required);
+        *size = required;
+        return 1;
+    }
+};
 
 // A curated bundle of durable [satview] fields flipped away from their
 // defaults. Chosen to be a fixed point of SatViewHost::apply_config under the
@@ -120,8 +177,20 @@ TEST_CASE("SatView dynamic plugin font builds constellation labels without an ap
     REQUIRE(offline.initialize());
     REQUIRE_FALSE(SatViewHostTestAccess::scene_text_atlas_ready(offline.host));
 
-    offline.host.set_imgui_font(tests::bundled_font_path().string(), 16.0f);
+    FakeUiStyleService style{ tests::bundled_font_path().string() };
+    const auto api = style.host_api();
+    plugin_support::UiStyleClient style_client;
+    REQUIRE(style_client.discover(api));
+    plugin_support::synchronize_ui_style(style_client, &offline.host);
     REQUIRE(SatViewHostTestAccess::scene_text_atlas_ready(offline.host));
+    CHECK(SatViewHostTestAccess::scene_text_atlas_has_cardinals(offline.host));
+    const auto first_revision = SatViewHostTestAccess::scene_text_atlas_revision(offline.host);
+    plugin_support::synchronize_ui_style(style_client, &offline.host);
+    CHECK(SatViewHostTestAccess::scene_text_atlas_revision(offline.host) == first_revision);
+    style.size_pixels = 19.0f;
+    ++style.generation;
+    plugin_support::synchronize_ui_style(style_client, &offline.host);
+    CHECK(SatViewHostTestAccess::scene_text_atlas_revision(offline.host) > first_revision);
 
     SatViewConfig config = SatViewHostTestAccess::current_config(offline.host);
     config.projection_mode = SatViewProjectionMode::Globe;
@@ -217,6 +286,77 @@ TEST_CASE("SatView host frame requests settle when paused", "[satview][host][smo
         offline.host.pump();
     const int burst = offline.callbacks.request_frame_calls - before;
     CHECK(burst <= 2);
+}
+
+TEST_CASE("SatView restored settings reach the running worker and pause remains authoritative",
+    "[satview][host][config][simulation]")
+{
+    OfflineSatViewHost offline;
+    REQUIRE(offline.initialize());
+    SatViewConfig restored = SatViewHostTestAccess::current_config(offline.host);
+    restored.time_speed = 120.0f;
+    restored.track_satellite_limit = 1;
+    restored.track_sample_count = 24;
+    SatViewHostTestAccess::apply_config(offline.host, restored);
+    REQUIRE(offline.pump_until([&] {
+        return SatViewHostTestAccess::worker_has_settings(offline.host, 120.0f, 24, false);
+    }));
+
+    offline.host.set_paused(true);
+    CHECK(offline.host.paused());
+    REQUIRE(offline.pump_until([&] {
+        return SatViewHostTestAccess::worker_has_settings(offline.host, 120.0f, 24, true);
+    }));
+    REQUIRE(offline.host.dispatch_action("satview_toggle_pause"));
+    CHECK_FALSE(offline.host.paused());
+
+    SatViewHostTestAccess::capture_keyboard(offline.host, true);
+    offline.host.on_key({ SDL_SCANCODE_SPACE, SDLK_SPACE, kModNone, true });
+    CHECK_FALSE(offline.host.paused());
+    SatViewHostTestAccess::capture_keyboard(offline.host, false);
+    offline.host.on_key({ SDL_SCANCODE_SPACE, SDLK_SPACE, kModNone, true });
+    CHECK(offline.host.paused());
+}
+
+TEST_CASE("SatView View panel Pause and Resume publish one persisted presentation transition each",
+    "[satview][host][panel][pause]")
+{
+    OfflineSatViewHost offline;
+    REQUIRE(offline.initialize());
+    offline.draw_once();
+    ImGui::SetWindowFocus("View");
+    offline.draw_once();
+    const auto bounds = SatViewHostTestAccess::pause_button_bounds(offline.host);
+    REQUIRE(bounds);
+    const glm::ivec2 button_center{
+        static_cast<int>((bounds->x + bounds->z) * 0.5f),
+        static_cast<int>((bounds->y + bounds->w) * 0.5f),
+    };
+    INFO("pause button bounds: " << bounds->x << "," << bounds->y
+        << " -> " << bounds->z << "," << bounds->w
+        << "; center: " << button_center.x << "," << button_center.y);
+    const auto click_button = [&] {
+        offline.host.on_mouse_move({ kModNone, button_center, { 0.0f, 0.0f }, 0 });
+        offline.draw_once();
+        offline.host.on_mouse_button({ 1, true, kModNone, button_center, 1 });
+        offline.draw_once();
+        offline.host.on_mouse_button({ 1, false, kModNone, button_center, 1 });
+        offline.draw_once();
+    };
+
+    click_button();
+    CHECK(offline.host.paused());
+    CHECK(offline.runtime_callbacks.stored_pause == true);
+    CHECK(offline.runtime_callbacks.pause_transition_count == 1);
+    CHECK(offline.runtime_callbacks.request_tick_count == 1);
+    CHECK(offline.runtime_callbacks.presentation_notifications == 1);
+
+    click_button();
+    CHECK_FALSE(offline.host.paused());
+    CHECK(offline.runtime_callbacks.stored_pause == false);
+    CHECK(offline.runtime_callbacks.pause_transition_count == 2);
+    CHECK(offline.runtime_callbacks.request_tick_count == 2);
+    CHECK(offline.runtime_callbacks.presentation_notifications == 2);
 }
 
 TEST_CASE("SatView host dirty flags settle after a change", "[satview][host][smoke]")

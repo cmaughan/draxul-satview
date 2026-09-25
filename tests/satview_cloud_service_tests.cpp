@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <atomic>
+#include <fstream>
 #include <string>
 #include <utility>
 
@@ -164,4 +165,71 @@ TEST_CASE("SatView cloud service retires a completed worker before manual refres
         std::chrono::seconds(5), std::chrono::milliseconds(1)));
     REQUIRE(wait_for_idle(service));
     CHECK(calls.load() >= 2);
+}
+
+TEST_CASE("SatView invalid cloud downloads preserve the last-good cache across restart", "[satview][cloud][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-cloud-invalid-download");
+    {
+        SatViewCloudService seeder;
+        seeder.start(config_for(temp.path, [](std::string_view, std::string&) {
+            return tiny_cloud_ppm();
+        }));
+        REQUIRE(wait_for_idle(seeder));
+    }
+
+    SatViewCloudService service;
+    service.start(config_for(temp.path, [](std::string_view, std::string&) {
+        return std::string("not an image");
+    }));
+    REQUIRE(wait_for_idle(service));
+    REQUIRE(service.take_pending_image());
+    REQUIRE(service.request_refresh());
+    REQUIRE(wait_for_idle(service));
+    CHECK(service.status().data_source == SatViewCloudService::DataSource::Cache);
+    CHECK(service.status().refresh_state == SatViewCloudService::RefreshState::Failed);
+    const auto fallback = service.take_pending_image();
+    REQUIRE(fallback);
+    CHECK(fallback->width == 2);
+    CHECK(fallback->height == 1);
+
+    int unexpected_fetches = 0;
+    SatViewCloudService restarted;
+    restarted.start(config_for(temp.path, [&](std::string_view, std::string&) {
+        ++unexpected_fetches;
+        return std::string{};
+    }));
+    REQUIRE(wait_for_idle(restarted));
+    CHECK(restarted.status().data_source == SatViewCloudService::DataSource::Cache);
+    CHECK(unexpected_fetches == 0);
+    CHECK(restarted.take_pending_image());
+}
+
+TEST_CASE("SatView invalid fresh cloud cache is retried and replaced", "[satview][cloud][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-cloud-invalid-cache");
+    const auto cache_path = SatViewCloudService::cache_image_path(temp.path);
+    {
+        std::ofstream invalid(cache_path, std::ios::binary);
+        invalid << "not an image";
+    }
+    int fetches = 0;
+    SatViewCloudService service;
+    service.start(config_for(temp.path, [&](std::string_view, std::string&) {
+        ++fetches;
+        return tiny_cloud_ppm();
+    }));
+    REQUIRE(wait_for_idle(service));
+    CHECK(fetches == 1);
+    CHECK(service.status().data_source == SatViewCloudService::DataSource::Live);
+    CHECK(service.take_pending_image());
+
+    SatViewCloudService restarted;
+    restarted.start(config_for(temp.path, [&](std::string_view, std::string&) {
+        ++fetches;
+        return std::string{};
+    }));
+    REQUIRE(wait_for_idle(restarted));
+    CHECK(fetches == 1);
+    CHECK(restarted.status().data_source == SatViewCloudService::DataSource::Cache);
 }

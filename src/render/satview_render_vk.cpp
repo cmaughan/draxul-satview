@@ -675,6 +675,12 @@ struct SatViewScenePass::State
         if (revision == uploaded_cloud_revision)
             return true;
 
+        // Existing descriptor sets and command buffers can still sample the
+        // previous revision. Cloud refreshes are rare, so drain readers first.
+        if (live_cloud_texture.image != VK_NULL_HANDLE
+            && vkDeviceWaitIdle(ctx.device()) != VK_SUCCESS)
+            return false;
+
         bool uploaded = false;
         if (live_cloud_texture.image == VK_NULL_HANDLE
             || image.width != live_cloud_texture.width
@@ -844,6 +850,11 @@ struct SatViewScenePass::State
     {
         if (revision == uploaded_label_atlas_revision)
             return true;
+        // Font/style changes are infrequent; complete all readers before
+        // replacing or updating the atlas behind the shared descriptor set.
+        if (label_texture.image != VK_NULL_HANDLE
+            && vkDeviceWaitIdle(ctx.device()) != VK_SUCCESS)
+            return false;
         LoadedTextureImage upload_image{ image.width, image.height, image.rgba };
         bool uploaded = false;
         if (label_texture.image == VK_NULL_HANDLE

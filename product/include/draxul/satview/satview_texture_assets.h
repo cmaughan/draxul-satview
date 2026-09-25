@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <draxul/satview/satview_config.h>
 #include <filesystem>
+#include <string_view>
 #include <vector>
 
 namespace draxul::satview
@@ -36,6 +37,7 @@ struct EarthTextureImages
 [[nodiscard]] std::filesystem::path resolve_satview_asset_path(const std::filesystem::path& relative_path);
 void set_satview_asset_root(std::filesystem::path root);
 [[nodiscard]] LoadedTextureImage load_rgba8_image(const std::filesystem::path& path);
+[[nodiscard]] LoadedTextureImage decode_rgba8_image(std::string_view bytes);
 [[nodiscard]] EarthTextureImages load_earth_texture_images();
 [[nodiscard]] LoadedTextureImage load_moon_texture_image();
 [[nodiscard]] LoadedTextureImage load_sun_texture_image();

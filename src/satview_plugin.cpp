@@ -46,6 +46,8 @@ using draxul::plugin_support::tick_result;
 
 constexpr const char* kSatViewPluginId = "dev.draxul.satview";
 
+struct SatViewPluginInstance;
+
 class RuntimeCallbacks final
     : public draxul::satview::SatViewRuntimeCallbacks
 {
@@ -57,8 +59,10 @@ public:
     }
     void request_quit() override {}
     void set_window_title(std::string_view) override {}
+    void on_pause_changed(bool paused) override;
 
     const DraxulPluginHostApiV2* host = nullptr;
+    SatViewPluginInstance* instance = nullptr;
 };
 
 struct SatViewPluginInstance
@@ -78,7 +82,7 @@ struct SatViewPluginInstance
     float angle = 0.0f;
     float direction = 1.0f;
     double last_time = -1.0;
-    bool paused = false;
+    bool initial_paused = false;
     bool visible = true;
     bool focused = false;
     bool quiesced = false;
@@ -113,7 +117,7 @@ void load_saved_state(SatViewPluginInstance* instance)
     try
     {
         const auto& state = *loaded.state;
-        instance->paused = state.value("paused", instance->paused);
+        instance->initial_paused = state.value("paused", instance->initial_paused);
         const float direction = state.value("direction", instance->direction);
         instance->direction = direction < 0.0f ? -1.0f : 1.0f;
         instance->saved_config_toml = state.value(
@@ -130,7 +134,7 @@ void save_state(SatViewPluginInstance* instance)
     if (!instance->remember_state || !instance->services.has_storage())
         return;
     nlohmann::json state{
-        { "paused", instance->paused },
+        { "paused", instance->runtime ? instance->runtime->paused() : instance->initial_paused },
         { "direction", instance->direction },
     };
     if (instance->runtime)
@@ -141,6 +145,17 @@ void save_state(SatViewPluginInstance* instance)
     }
     instance->storage_warning
         = draxul::plugin_support::save_pane_state(instance->services, state);
+}
+
+void RuntimeCallbacks::on_pause_changed(bool)
+{
+    if (!instance)
+        return;
+    instance->last_time = -1.0;
+    save_state(instance);
+    instance->services.request_tick();
+    instance->services.request_redraw();
+    instance->services.notify_presentation_changed();
 }
 
 void* create_instance(const DraxulPluginCreateInfoV2* info)
@@ -161,7 +176,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         instance->speed = config->value(
             "speed_radians_per_second", 1.0f);
         instance->angle = config->value("initial_angle", 0.0f);
-        instance->paused = config->value("paused", false);
+        instance->initial_paused = config->value("paused", false);
         instance->remember_state = config->value("remember_state", true);
     }
     catch (...)
@@ -195,8 +210,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         delete instance;
         return nullptr;
     }
-    if (instance->paused)
-        instance->runtime->dispatch_action("satview_toggle_pause");
+    instance->runtime->set_paused(instance->initial_paused);
     if (!instance->saved_config_toml.empty())
     {
         if (const auto config_toml
@@ -209,6 +223,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
     if (instance->imgui_overlay)
         instance->runtime->attach_imgui_host(*instance->imgui_overlay);
     synchronize_ui_style(*instance);
+    instance->runtime_callbacks.instance = instance;
     return instance;
 }
 
@@ -275,19 +290,6 @@ void set_focused(void* opaque, int32_t focused)
     instance->services.notify_presentation_changed();
 }
 
-void toggle_pause(SatViewPluginInstance* instance,
-    bool runtime_already_toggled = false)
-{
-    instance->paused = !instance->paused;
-    if (instance->runtime && !runtime_already_toggled)
-        instance->runtime->dispatch_action("satview_toggle_pause");
-    instance->last_time = -1.0;
-    save_state(instance);
-    instance->services.request_tick();
-    instance->services.request_redraw();
-    instance->services.notify_presentation_changed();
-}
-
 int32_t handle_input(void* opaque,
     const DraxulPluginInputEventV2* event)
 {
@@ -338,11 +340,6 @@ int32_t handle_input(void* opaque,
             break;
         }
     }
-    if (event->kind == DRAXUL_PLUGIN_INPUT_KEY
-        && event->pressed && event->logical_key == 32)
-    {
-        toggle_pause(instance, true);
-    }
     return 1;
 }
 
@@ -359,7 +356,7 @@ DraxulPluginTickResultV2 tick(void* opaque,
         instance->runtime->pump();
     }
     if (instance->quiesced || !instance->visible || !info->visible
-        || instance->paused)
+        || (instance->runtime && instance->runtime->paused()))
     {
         instance->last_time = -1.0;
         return tick_result(true, DRAXUL_PLUGIN_NO_DEADLINE);
@@ -530,13 +527,14 @@ int32_t dispatch_action(void* opaque, const char* action,
     if (!instance || !action)
         return 0;
     const std::string_view value(action, action_length);
-    if (value == "satview_toggle_pause")
-        toggle_pause(instance);
-    else if (instance->runtime
-        && instance->runtime->dispatch_action(value))
+    const bool previously_paused = instance->runtime && instance->runtime->paused();
+    if (instance->runtime && instance->runtime->dispatch_action(value))
     {
-        save_state(instance);
-        instance->services.notify_presentation_changed();
+        if (instance->runtime->paused() == previously_paused)
+        {
+            save_state(instance);
+            instance->services.notify_presentation_changed();
+        }
     }
     else
         return 0;

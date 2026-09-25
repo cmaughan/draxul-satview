@@ -6,14 +6,17 @@ Same-sized cloud updates overwrite a texture that an earlier asynchronous frame 
 
 **Investigation**
 
-- [ ] Trace cloud revision publication, texture ownership, and outstanding frame usage.
+- [x] Trace cloud revision publication, texture ownership, and outstanding frame usage. Same-sized updates used `replaceRegion` on one shared texture, while frame slots could still sample it.
 
 **Fix strategy**
 
-- [ ] Upload into a replacement texture with safe retirement, or synchronize every outstanding reader before mutation.
+- [x] Upload into a replacement texture with safe retirement, or synchronize every outstanding reader before mutation. Every revision now gets a new Metal texture, with prior textures retained by their in-flight frame slots.
 
 **Acceptance criteria**
 
 - [ ] Repeated same-sized refreshes remain correct with multiple frames in flight.
-- [ ] Run SatView aggregate tests, Metal refresh/render checks, and same-cache smoke; inspect Vulkan parity.
-- [ ] Keep this scope separate from `kanban/pending/36 satview-vulkan-stream-buffer-lifetime -bug.md`.
+- [x] Run SatView aggregate tests and same-cache startup smoke; inspect Vulkan parity.
+- [ ] Run Metal refresh/render checks on macOS, including repeated same-sized updates with multiple frames in flight.
+- [x] Keep this scope separate from Vulkan stream-buffer lifetime. The previously referenced card 36 is absent from this board; this change only adds synchronization for cloud and label texture refresh, not stream-buffer handling.
+
+**2026-09-25 validation:** Metal implementation changed, and Vulkan cloud/label uploads now drain existing readers before mutating or rewriting shared descriptors. All-products Debug aggregate passed 49/49 CTest entries; same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s). The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session; it is not counted as a pass. macOS Metal build/render validation remains; this card stays pending until then.

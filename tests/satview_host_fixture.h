@@ -17,6 +17,7 @@
 #include <draxul/satview/satview_config.h>
 #include <draxul/satview/satview_runtime.h>
 #include <draxul/satview/satview_scene_pass.h>
+#include "../src/runtime/satview_simulation_worker.h"
 
 #ifdef DRAXUL_ENABLE_SATVIEW
 
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <imgui.h>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -96,6 +98,26 @@ public:
     {
         return host.paused_;
     }
+    static std::optional<glm::vec4> pause_button_bounds(const SatViewHost& host)
+    {
+        if (!host.test_hooks_.pause_button_rect_ready)
+            return std::nullopt;
+        return host.test_hooks_.pause_button_bounds;
+    }
+    static void capture_keyboard(SatViewHost& host, bool captured)
+    {
+        ImGui::SetCurrentContext(host.imgui_.context());
+        ImGui::GetIO().WantCaptureKeyboard = captured;
+    }
+    static bool worker_has_settings(const SatViewHost& host,
+        float time_speed, std::size_t track_samples, bool paused)
+    {
+        auto snapshot = host.simulation_worker_->acquire_latest();
+        return snapshot && snapshot->time_speed == time_speed
+            && snapshot->paused == paused
+            && snapshot->tracks && !snapshot->tracks->empty()
+            && snapshot->tracks->front().teme_points_km.size() == track_samples;
+    }
     static bool scene_pass_attached(const SatViewHost& host)
     {
         return static_cast<bool>(host.scene_pass_);
@@ -103,6 +125,21 @@ public:
     static bool scene_text_atlas_ready(const SatViewHost& host)
     {
         return host.scene_text_atlas_ && host.scene_text_atlas_->image.valid();
+    }
+    static bool scene_text_atlas_has_cardinals(const SatViewHost& host)
+    {
+        if (!scene_text_atlas_ready(host))
+            return false;
+        for (const char cardinal : std::string_view("NESW"))
+        {
+            if (!host.scene_text_atlas_->entries.contains(std::string("cardinal:") + cardinal))
+                return false;
+        }
+        return true;
+    }
+    static std::uint64_t scene_text_atlas_revision(const SatViewHost& host)
+    {
+        return host.scene_text_atlas_ ? host.scene_text_atlas_->image.revision : 0;
     }
     static std::size_t constellation_label_count(const SatViewHost& host)
     {
@@ -204,6 +241,19 @@ struct OfflineSatViewHost
         {
             target_.set_window_title(std::string(title));
         }
+        void on_pause_changed(bool paused) override
+        {
+            stored_pause = paused;
+            ++pause_transition_count;
+            ++request_tick_count;
+            ++presentation_notifications;
+            target_.request_frame();
+        }
+
+        std::optional<bool> stored_pause;
+        int pause_transition_count = 0;
+        int request_tick_count = 0;
+        int presentation_notifications = 0;
 
     private:
         tests::TestHostCallbacks& target_;

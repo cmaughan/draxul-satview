@@ -9,6 +9,7 @@ target_link_libraries(draxul-test-satview PRIVATE
     draxul-satview-services-test-internals
     draxul-satview-runtime-test-internals
     draxul-satview-renderer-test-internals
+    Draxul::PluginSupport::Adapter
     Draxul::PluginSupport::Config
     SDL3::SDL3
     draxul-host-api

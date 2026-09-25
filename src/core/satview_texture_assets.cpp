@@ -4,6 +4,8 @@
 #include <draxul/log.h>
 #include <draxul/perf_timing.h>
 
+#include <limits>
+
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -58,6 +60,26 @@ LoadedTextureImage make_solid_rgba8(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 LoadedTextureImage load_rgba8_image(const std::filesystem::path& path)
 {
     return load_rgba8_image_impl(path);
+}
+
+LoadedTextureImage decode_rgba8_image(std::string_view bytes)
+{
+    LoadedTextureImage image;
+    if (bytes.empty() || bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+        return image;
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* pixels = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc*>(bytes.data()), static_cast<int>(bytes.size()),
+        &width, &height, &channels, 4);
+    if (!pixels)
+        return image;
+    image.width = width;
+    image.height = height;
+    image.rgba.assign(pixels, pixels + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+    stbi_image_free(pixels);
+    return image;
 }
 
 std::filesystem::path resolve_satview_asset_path(const std::filesystem::path& relative_path)

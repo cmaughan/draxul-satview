@@ -1592,9 +1592,7 @@ void SatViewRuntime::on_key(const KeyEvent& event)
     }
     if (event.keycode == SDLK_SPACE)
     {
-        paused_ = !paused_;
-        sync_simulation_controls();
-        request_redraw();
+        set_paused(!paused_);
         return;
     }
     if (event.keycode == SDLK_LEFTBRACKET)
@@ -1650,9 +1648,7 @@ bool SatViewRuntime::dispatch_action(std::string_view action)
     }
     if (action == "satview_pause" || action == "satview_toggle_pause")
     {
-        paused_ = !paused_;
-        sync_simulation_controls();
-        request_redraw();
+        set_paused(!paused_);
         return true;
     }
     if (action == "satview_time_slower")
@@ -1959,6 +1955,13 @@ void SatViewRuntime::apply_config(const SatViewConfig& config)
     copy_to_buffer(source_buffer_, filter_.source_text);
     rebuild_visible_stars();
     update_constellation_line_styles();
+    if (running_)
+    {
+        sync_simulation_controls();
+        sync_simulation_render_settings();
+        invalidate_visual_buffers();
+        request_redraw();
+    }
 }
 
 void SatViewRuntime::persist_config()
@@ -1970,6 +1973,22 @@ void SatViewRuntime::sync_simulation_controls()
 {
     if (simulation_worker_)
         simulation_worker_->set_controls(time_speed_, paused_);
+}
+
+bool SatViewRuntime::paused() const
+{
+    return paused_;
+}
+
+void SatViewRuntime::set_paused(bool paused)
+{
+    if (paused_ == paused)
+        return;
+    paused_ = paused;
+    sync_simulation_controls();
+    if (callbacks_)
+        callbacks_->on_pause_changed(paused_);
+    request_redraw();
 }
 
 void SatViewRuntime::sync_simulation_render_settings()
@@ -2502,7 +2521,7 @@ void SatViewRuntime::set_real_time()
     simulated_seconds_ = now_unix_seconds();
     last_draw_simulation_seconds_ = simulated_seconds_;
     time_speed_ = 1.0f;
-    paused_ = false;
+    set_paused(false);
     if (simulation_worker_)
         simulation_worker_->set_clock(simulated_seconds_, time_speed_, paused_);
     request_redraw();
@@ -2594,7 +2613,7 @@ void SatViewRuntime::reset_to_default_settings()
     uploaded_earth_track_visible_ = false;
     dragging_ = false;
     pending_click_ = false;
-    paused_ = false;
+    set_paused(false);
     simulated_seconds_ = now_unix_seconds();
     last_draw_simulation_seconds_ = simulated_seconds_;
 

@@ -4,12 +4,22 @@
 #include <draxul/perf_timing.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <system_error>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace draxul::satview
 {
@@ -46,7 +56,15 @@ bool write_binary_atomic(const std::filesystem::path& path, std::string_view con
         return false;
     }
 
-    const std::filesystem::path temporary = path.string() + ".tmp";
+    static std::atomic<std::uint64_t> next_temporary_id{ 0 };
+#if defined(_WIN32)
+    const auto process_id = GetCurrentProcessId();
+#else
+    const auto process_id = getpid();
+#endif
+    const std::filesystem::path temporary = path.string() + ".tmp."
+        + std::to_string(process_id) + "."
+        + std::to_string(next_temporary_id.fetch_add(1, std::memory_order_relaxed));
     {
         std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
         if (!out.is_open())
@@ -62,15 +80,17 @@ bool write_binary_atomic(const std::filesystem::path& path, std::string_view con
         }
     }
 
+#if defined(_WIN32)
+    if (!MoveFileExW(temporary.c_str(), path.c_str(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
+#else
     std::filesystem::rename(temporary, path, ec);
+#endif
     if (ec)
     {
-        std::filesystem::remove(path, ec);
-        ec.clear();
-        std::filesystem::rename(temporary, path, ec);
-    }
-    if (ec)
-    {
+        std::error_code cleanup_error;
+        std::filesystem::remove(temporary, cleanup_error);
         error = "failed to replace cloud cache: " + ec.message();
         return false;
     }
@@ -260,7 +280,7 @@ void SatViewCloudService::start_refresh(bool force_fetch)
                 result.error = "cached cloud image is invalid";
             }
         }
-        else
+        if (!result.success)
         {
             result.refresh_attempted_at = Clock::now();
             std::string fetch_error;
@@ -284,24 +304,23 @@ void SatViewCloudService::start_refresh(bool force_fetch)
                     fetch_error = std::move(response.error);
             }
             std::string cache_error;
-            if (!bytes.empty() && write_binary_atomic(cache_path, bytes, cache_error))
+            auto image = std::make_shared<LoadedTextureImage>(decode_rgba8_image(bytes));
+            if (!image->valid())
             {
-                auto image = std::make_shared<LoadedTextureImage>(load_rgba8_image(cache_path));
-                if (image->valid())
-                {
-                    result.success = true;
-                    result.data_source = DataSource::Live;
-                    result.image = std::move(image);
-                    result.fetched_at = Clock::now();
-                }
-                else
-                {
-                    result.error = "downloaded cloud image is invalid";
-                }
+                result.error = fetch_error.empty()
+                    ? "downloaded cloud image is invalid" : std::move(fetch_error);
+            }
+            else if (write_binary_atomic(cache_path, bytes, cache_error))
+            {
+                result.success = true;
+                result.data_source = DataSource::Live;
+                result.image = std::move(image);
+                result.fetched_at = Clock::now();
+                result.error.clear();
             }
             else
             {
-                result.error = !fetch_error.empty() ? std::move(fetch_error) : std::move(cache_error);
+                result.error = std::move(cache_error);
             }
 
             if (!result.success && cache_exists)

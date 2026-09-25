@@ -51,6 +51,7 @@ public:
     virtual void request_frame() = 0;
     virtual void request_quit() = 0;
     virtual void set_window_title(std::string_view title) = 0;
+    virtual void on_pause_changed(bool paused) = 0;
 };
 
 class SatViewFrameSink
@@ -92,6 +93,8 @@ public:
     void on_focus_lost();
 
     bool dispatch_action(std::string_view action);
+    [[nodiscard]] bool paused() const;
+    void set_paused(bool paused);
     void request_close();
     std::string status_text() const;
     draxul::Color default_background() const;
@@ -151,6 +154,8 @@ private:
         TestFetchFunction catalog_fetch;
         TestFetchFunction cloud_fetch;
         std::string cache_directory;
+        glm::vec4 pause_button_bounds{ 0.0f };
+        bool pause_button_rect_ready = false;
     };
     [[nodiscard]] double now_unix_seconds() const;
 
