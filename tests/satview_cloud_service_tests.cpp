@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <atomic>
 #include <string>
 #include <utility>
 
@@ -136,4 +137,31 @@ TEST_CASE("SatView cloud service backs off after stale-cache refresh failure", "
     for (int i = 0; i < 5; ++i)
         service.pump();
     CHECK(fetch_calls == 1);
+}
+
+TEST_CASE("SatView cloud service retires a completed worker before manual refresh", "[satview][cloud][service][thread]")
+{
+    draxul::tests::TempDir temp("satview-cloud-service-retire");
+    std::atomic<int> calls{ 0 };
+    std::atomic<bool> fetch_completed{ false };
+    auto config = config_for(temp.path, [&](std::string_view, std::string& error) {
+        calls.fetch_add(1);
+        error.clear();
+        fetch_completed.store(true, std::memory_order_release);
+        return tiny_cloud_ppm();
+    });
+    SatViewCloudService service;
+    service.start(std::move(config));
+    REQUIRE(draxul::tests::pump_until(
+        [] {},
+        [&] { return fetch_completed.load(std::memory_order_acquire); },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+
+    bool restarted = false;
+    REQUIRE(draxul::tests::pump_until(
+        [&] { restarted = service.request_refresh(); },
+        [&] { return restarted; },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+    REQUIRE(wait_for_idle(service));
+    CHECK(calls.load() >= 2);
 }

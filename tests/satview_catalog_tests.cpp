@@ -1,6 +1,9 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <draxul/satview/satview_catalog.h>
+#include <draxul/satview/satview_texture_assets.h>
+
+#include <filesystem>
 
 using draxul::satview::apply_lunar_disposition_csv;
 using draxul::satview::apply_sampled_ephemeris_csv;
@@ -122,6 +125,18 @@ TEST_CASE("SatView sample catalog fixture loads offline", "[satview][catalog]")
     CHECK(result.catalog.objects[2].object_kind == SatelliteObjectKind::Debris);
     CHECK(result.catalog.objects[3].orbit_class == OrbitClass::HighlyElliptical);
     CHECK(result.catalog.objects[3].object_kind == SatelliteObjectKind::Payload);
+}
+
+TEST_CASE("SatView missing bundled catalog assets return a controlled diagnostic", "[satview][catalog][assets]")
+{
+    draxul::satview::set_satview_asset_root(
+        std::filesystem::temp_directory_path() / "draxul-satview-missing-assets");
+    draxul::satview::SatelliteCatalog catalog;
+    std::string error;
+    CHECK(load_bundled_sampled_ephemeris(catalog, &error) == 0);
+    CHECK(error.find("failed to open") != std::string::npos);
+    draxul::satview::set_satview_asset_root(
+        std::filesystem::path(DRAXUL_SATVIEW_TEST_ASSET_ROOT));
 }
 
 TEST_CASE("SatView catalog derives sun-synchronous candidates from GP and SATCAT orbits", "[satview][catalog]")
@@ -302,6 +317,31 @@ TEST_CASE("SatView sampled lunar ephemeris upgrades matching catalog-only record
     CHECK(lro.solution_kind == OrbitSolutionKind::SampledEphemeris);
     CHECK(lro.ephemeris_source == "JPL Horizons");
     CHECK(lro.ephemeris_samples.size() == 2);
+}
+
+TEST_CASE("SatView rejected ephemeris rows do not overwrite accepted metadata", "[satview][catalog][moon]")
+{
+    const std::string satcat_csv =
+        "OBJECT_NAME,NORAD_CAT_ID,OBJECT_TYPE,DECAY_DATE,ORBIT_CENTER,ORBIT_TYPE\n"
+        "LUNAR TEST,81001,PAY,,MO,ORB\n";
+    auto parsed = parse_celestrak_satcat_csv(satcat_csv);
+    REQUIRE(parsed);
+    REQUIRE(parsed.catalog.objects.size() == 1);
+
+    const std::string ephemeris_csv =
+        "NORAD_CAT_ID,SOURCE,FRAME,UNIX_SECONDS,X_KM,Y_KM,Z_KM,VX_KM_PER_S,VY_KM_PER_S,VZ_KM_PER_S,TRACK_HORIZON_MINUTES\n"
+        "81001,accepted,MOON_ICRF,1,1,2,3,4,5,6,120\n"
+        "81001,accepted,MOON_ICRF,2,2,3,4,5,6,7,120\n"
+        "81001,rejected frame,BAD_FRAME,3,3,4,5,6,7,8,240\n"
+        "81001,rejected horizon,MOON_EQUATORIAL_J2000,4,4,5,6,7,8,9,-1\n";
+    std::string error;
+    CHECK(apply_sampled_ephemeris_csv(parsed.catalog, ephemeris_csv, &error) == 1);
+    CHECK(error.empty());
+    const auto& record = parsed.catalog.objects.front();
+    CHECK(record.ephemeris_source == "accepted");
+    CHECK(record.ephemeris_frame == "MOON_ICRF");
+    CHECK(record.ephemeris_track_horizon_minutes == Catch::Approx(120.0));
+    REQUIRE(record.ephemeris_samples.size() == 2);
 }
 
 TEST_CASE("SatView bundled ephemeris catalog upgrades the curated lunar missions", "[satview][catalog][moon]")

@@ -65,3 +65,51 @@ TEST_CASE("SatView rings use opaque depth-writing render state", "[satview][ring
     CHECK(vulkan_ring_pipeline.find("blend_attachment.blendEnable = VK_TRUE") == std::string::npos);
     CHECK(vulkan_ring_pipeline.find("depth.depthWriteEnable = VK_FALSE") == std::string::npos);
 }
+
+TEST_CASE("SatView Vulkan streams remain owned by their buffered frame slot",
+    "[satview][vulkan][streams]")
+{
+    const auto source = read_text_file(
+        std::filesystem::path(DRAXUL_PROJECT_ROOT)
+        / "plugins" / "satview" / "src" / "render" / "satview_render_vk.cpp");
+    REQUIRE_FALSE(source.empty());
+
+    const std::string frame_streams = source_block(
+        source,
+        "struct FrameStreams",
+        "uint64_t uploaded_label_atlas_revision");
+    REQUIRE_FALSE(frame_streams.empty());
+    CHECK(frame_streams.find("BufferResource track_vertex_buffer") != std::string::npos);
+    CHECK(frame_streams.find("BufferResource marker_buffer") != std::string::npos);
+    CHECK(frame_streams.find("BufferResource surface_marker_buffer") != std::string::npos);
+    CHECK(frame_streams.find("uint64_t uploaded_track_revision") != std::string::npos);
+    CHECK(frame_streams.find("uint64_t uploaded_marker_revision") != std::string::npos);
+    CHECK(frame_streams.find("std::vector<FrameStreams> frame_streams") != std::string::npos);
+
+    const std::string prepass = source_block(
+        source,
+        "void SatViewScenePass::record_prepass(IRenderContext& ctx)",
+        "void SatViewScenePass::record(IRenderContext& ctx)");
+    REQUIRE_FALSE(prepass.empty());
+    CHECK(prepass.find("vk_ctx->frame_index() % buffered_frame_count") != std::string::npos);
+    CHECK(prepass.find("auto& streams = state_->frame_streams[frame_index]") != std::string::npos);
+    CHECK(prepass.find("streams.track_vertex_buffer") != std::string::npos);
+    CHECK(prepass.find("streams.marker_buffer") != std::string::npos);
+    CHECK(prepass.find("streams.surface_marker_buffer") != std::string::npos);
+    CHECK(prepass.find("&streams.track_vertex_buffer.buffer") != std::string::npos);
+    CHECK(prepass.find("&streams.marker_buffer.buffer") != std::string::npos);
+    CHECK(prepass.find("&streams.surface_marker_buffer.buffer") != std::string::npos);
+
+    // Same-capacity writes and growth can replace only the current slot's
+    // resource because every upload and draw below is reached through the
+    // frame-local `streams` reference above.
+    const std::string upload = source_block(
+        source,
+        "bool ensure_vertex_buffer(const VkRenderContext& ctx",
+        "bool ensure_label_texture(");
+    REQUIRE_FALSE(upload.empty());
+    CHECK(upload.find("buffer.size < byte_size") != std::string::npos);
+    CHECK(upload.find("destroy_buffer(ctx.allocator(), buffer)") != std::string::npos);
+    CHECK(upload.find("std::memcpy(buffer.mapped, items.data(), byte_size)") != std::string::npos);
+    CHECK(upload.find("vmaFlushAllocation(ctx.allocator(), buffer.allocation, 0, byte_size)") != std::string::npos);
+}

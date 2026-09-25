@@ -5,11 +5,13 @@ file(GLOB _satview_test_sources CONFIGURE_DEPENDS
 draxul_add_test_target(
     draxul-test-satview satview 2 ${_satview_test_sources})
 target_link_libraries(draxul-test-satview PRIVATE
+    draxul-satview-core-test-internals
+    draxul-satview-services-test-internals
     draxul-satview-runtime-test-internals
     draxul-satview-renderer-test-internals
     Draxul::PluginSupport::Config
     SDL3::SDL3
-    draxul-host
+    draxul-host-api
     draxul-renderer)
 target_compile_definitions(draxul-test-satview PRIVATE
     DRAXUL_ENABLE_SATVIEW

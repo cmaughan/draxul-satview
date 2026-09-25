@@ -1,13 +1,24 @@
 #include "temp_dir.h"
 #include "test_support.h"
+#include "satview_cache_publication.h"
 
 #include <catch2/catch_test_macros.hpp>
 #include <draxul/satview/satview_catalog_service.h>
 
 #include <chrono>
+#include <atomic>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <thread>
 #include <utility>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 using draxul::satview::SatViewCatalogService;
 
@@ -102,7 +113,146 @@ SatViewCatalogService::FetchFunction payload_fetch(
     };
 }
 
+void write_file(const std::filesystem::path& path, std::string_view content)
+{
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    REQUIRE(out.is_open());
+    out.write(content.data(), static_cast<std::streamsize>(content.size()));
+    REQUIRE(out.good());
+}
+
+std::string read_file(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    REQUIRE(in.is_open());
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 } // namespace
+
+TEST_CASE("SatView cache publication preserves the destination when replacement fails",
+    "[satview][catalog][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-cache-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    std::filesystem::path attempted_temporary;
+    std::filesystem::path attempted_destination;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            attempted_temporary = temporary;
+            attempted_destination = target;
+            return std::make_error_code(std::errc::permission_denied);
+        });
+
+    CHECK_FALSE(published);
+    CHECK(attempted_destination == destination);
+    CHECK(attempted_temporary.parent_path() == destination.parent_path());
+    CHECK(attempted_temporary.filename().string().starts_with("catalog.json.tmp."));
+    CHECK_FALSE(std::filesystem::exists(attempted_temporary));
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+}
+
+#ifdef __APPLE__
+TEST_CASE("SatView macOS cache replacement failure keeps an existing regular file",
+    "[satview][catalog][service][cache][macos]")
+{
+    draxul::tests::TempDir temp("satview-cache-macos-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    const auto original_permissions = std::filesystem::status(temp.path).permissions();
+    std::error_code restrict_error;
+    std::error_code restore_error;
+    std::error_code native_replace_error;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            std::filesystem::permissions(
+                temp.path,
+                std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                std::filesystem::perm_options::replace,
+                restrict_error);
+            if (!restrict_error)
+            {
+                native_replace_error = draxul::satview::detail::replace_cache_file_atomically(
+                    temporary, target);
+            }
+            std::filesystem::permissions(
+                temp.path,
+                original_permissions,
+                std::filesystem::perm_options::replace,
+                restore_error);
+            return restrict_error ? restrict_error : native_replace_error;
+        });
+
+    REQUIRE_FALSE(restrict_error);
+    REQUIRE_FALSE(restore_error);
+    REQUIRE(native_replace_error);
+    CHECK_FALSE(published);
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+}
+#endif
+
+#ifdef _WIN32
+TEST_CASE("SatView Windows cache replacement failure keeps an existing regular file",
+    "[satview][catalog][service][cache][windows]")
+{
+    draxul::tests::TempDir temp("satview-cache-windows-replacement-failure");
+    const auto destination = temp.path / "catalog.json";
+    write_file(destination, "last valid cache");
+
+    // Denying FILE_SHARE_DELETE forces the production MoveFileExW replacement
+    // to fail while the existing destination remains open and readable.
+    const HANDLE locked_destination = CreateFileW(
+        destination.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+    REQUIRE(locked_destination != INVALID_HANDLE_VALUE);
+
+    std::error_code native_replace_error;
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination,
+        "replacement cache",
+        error,
+        [&](const std::filesystem::path& temporary, const std::filesystem::path& target) {
+            native_replace_error = draxul::satview::detail::replace_cache_file_atomically(
+                temporary, target);
+            return native_replace_error;
+        });
+    REQUIRE(CloseHandle(locked_destination) != 0);
+
+    INFO("MoveFileExW error: " << native_replace_error.message());
+    CHECK_FALSE(published);
+    CHECK((native_replace_error.value() == ERROR_SHARING_VIOLATION
+        || native_replace_error.value() == ERROR_ACCESS_DENIED));
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to replace") != std::string::npos);
+
+    size_t temporary_files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path))
+    {
+        if (entry.path().filename().string().starts_with("catalog.json.tmp."))
+            ++temporary_files;
+    }
+    CHECK(temporary_files == 0);
+}
+#endif
 
 TEST_CASE("SatView catalog service builds encoded CelesTrak group URLs", "[satview][catalog][service]")
 {
@@ -315,4 +465,73 @@ TEST_CASE("SatView catalog service keeps one cached source when the other refres
     CHECK(status.satcat.data_source == SatViewCatalogService::DataSource::Cache);
     CHECK(status.satcat.error == "SATCAT unavailable");
     CHECK(status.object_count == 3);
+}
+
+TEST_CASE("SatView catalog service retires a completed worker before refreshing again", "[satview][catalog][service][thread]")
+{
+    draxul::tests::TempDir temp("satview-catalog-service-retire");
+    std::atomic<int> calls{ 0 };
+    std::atomic<bool> second_fetch_completed{ false };
+    auto config = config_for(temp.path, [&](std::string_view url, std::string& error) {
+        const int call = calls.fetch_add(1) + 1;
+        error.clear();
+        if (call == 2)
+            second_fetch_completed.store(true, std::memory_order_release);
+        return url.find("satcat.csv") != std::string_view::npos
+            ? std::string(kOneObjectSatcat)
+            : std::string(kOneObjectJson);
+    });
+    config.refresh_interval = std::chrono::seconds::zero();
+    config.satcat_refresh_interval = std::chrono::seconds::zero();
+
+    SatViewCatalogService service;
+    service.start(std::move(config));
+    REQUIRE(draxul::tests::pump_until(
+        [] {},
+        [&] { return second_fetch_completed.load(std::memory_order_acquire); },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+
+    // The worker has returned but remains joinable until request_refresh pumps
+    // its result. Replacing it here used to call std::terminate.
+    bool restarted = false;
+    REQUIRE(draxul::tests::pump_until(
+        [&] { restarted = service.request_refresh(); },
+        [&] { return restarted; },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+    REQUIRE(wait_for_idle(service));
+    CHECK(calls.load() >= 4);
+}
+
+TEST_CASE("SatView concurrent catalog publishers leave a coherent reusable cache", "[satview][catalog][service][cache]")
+{
+    draxul::tests::TempDir temp("satview-catalog-service-concurrent");
+    std::atomic<int> ready{ 0 };
+    const auto concurrent_fetch = [&](std::string_view url, std::string& error) {
+        ready.fetch_add(1, std::memory_order_release);
+        while (ready.load(std::memory_order_acquire) < 2)
+            std::this_thread::yield();
+        error.clear();
+        return url.find("satcat.csv") != std::string_view::npos
+            ? std::string(kOneObjectSatcat)
+            : std::string(kOneObjectJson);
+    };
+
+    SatViewCatalogService first;
+    SatViewCatalogService second;
+    first.start(config_for(temp.path, concurrent_fetch));
+    second.start(config_for(temp.path, concurrent_fetch));
+    REQUIRE(wait_for_idle(first));
+    REQUIRE(wait_for_idle(second));
+
+    int offline_fetches = 0;
+    SatViewCatalogService offline;
+    offline.start(config_for(temp.path, [&](std::string_view, std::string& error) {
+        ++offline_fetches;
+        error = "offline";
+        return std::string{};
+    }));
+    offline.pump();
+    CHECK(offline_fetches == 0);
+    CHECK(offline.status().data_source == SatViewCatalogService::DataSource::Cache);
+    CHECK(offline.status().object_count == 1);
 }

@@ -1,4 +1,6 @@
 #include <draxul/satview/satview_catalog.h>
+
+#include "satview_csv_tokenizer.h"
 #include <draxul/satview/satview_texture_assets.h>
 
 #include <draxul/log.h>
@@ -687,11 +689,7 @@ std::optional<SatelliteRecord> make_record(const JsonObject& object)
 
 std::filesystem::path resolve_satview_catalog_path(const std::filesystem::path& relative_path)
 {
-    const auto explicit_asset = resolve_satview_asset_path(relative_path);
-    if (std::filesystem::exists(explicit_asset))
-        return explicit_asset;
-
-    return explicit_asset;
+    return resolve_satview_asset_path(relative_path);
 }
 
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error)
@@ -712,94 +710,26 @@ std::optional<std::string> read_text_file(const std::filesystem::path& path, std
     return content;
 }
 
-using CsvRow = std::vector<std::string>;
+using CsvRow = SatViewCsvRow;
 
 bool parse_csv_rows(std::string_view csv, std::vector<CsvRow>& rows, std::string& error)
 {
-    CsvRow row;
-    std::string field;
-    bool quoted = false;
-    bool quote_closed = false;
-
-    auto finish_field = [&]() {
-        row.push_back(std::move(field));
-        field.clear();
-        quote_closed = false;
-    };
-    auto finish_row = [&]() {
-        finish_field();
-        rows.push_back(std::move(row));
-        row.clear();
-    };
-
-    for (std::size_t i = 0; i < csv.size(); ++i)
+    const SatViewCsvLexResult result = tokenize_satview_csv(csv, rows);
+    switch (result.error)
     {
-        const char c = csv[i];
-        if (quoted)
-        {
-            if (c == '"')
-            {
-                if (i + 1 < csv.size() && csv[i + 1] == '"')
-                {
-                    field.push_back('"');
-                    ++i;
-                }
-                else
-                {
-                    quoted = false;
-                    quote_closed = true;
-                }
-            }
-            else
-            {
-                field.push_back(c);
-            }
-            continue;
-        }
-
-        if (quote_closed && c != ',' && c != '\r' && c != '\n')
-        {
-            error = "unexpected data after quoted CSV field";
-            return false;
-        }
-        if (c == '"')
-        {
-            if (!field.empty() || quote_closed)
-            {
-                error = "unexpected quote in CSV field";
-                return false;
-            }
-            quoted = true;
-        }
-        else if (c == ',')
-        {
-            finish_field();
-        }
-        else if (c == '\n')
-        {
-            finish_row();
-        }
-        else if (c == '\r')
-        {
-            if (i + 1 >= csv.size() || csv[i + 1] != '\n')
-                finish_row();
-        }
-        else
-        {
-            field.push_back(c);
-        }
-    }
-
-    if (quoted)
-    {
+    case SatViewCsvLexError::None:
+        return true;
+    case SatViewCsvLexError::UnexpectedDataAfterQuotedField:
+        error = "unexpected data after quoted CSV field";
+        return false;
+    case SatViewCsvLexError::UnexpectedQuote:
+        error = "unexpected quote in CSV field";
+        return false;
+    case SatViewCsvLexError::UnterminatedQuotedField:
         error = "unterminated quoted CSV field";
         return false;
     }
-    if (!field.empty() || !row.empty() || quote_closed)
-        finish_row();
-    while (!rows.empty() && rows.back().size() == 1 && rows.back().front().empty())
-        rows.pop_back();
-    return true;
+    return false;
 }
 
 std::string trim_ascii(std::string_view text)
@@ -1349,17 +1279,19 @@ std::size_t apply_sampled_ephemeris_csv(
         if (invalid || !time || !x || !y || !z || !vx || !vy || !vz)
             continue;
 
-        SatelliteRecord& record = *found->second;
-        record.ephemeris_source = trim_ascii(field(row, "SOURCE"));
-        record.ephemeris_frame = uppercase_ascii(field(row, "FRAME"));
-        if (record.ephemeris_frame != "MOON_ICRF"
-            && record.ephemeris_frame != "MOON_EQUATORIAL_J2000")
+        const std::string ephemeris_source = trim_ascii(field(row, "SOURCE"));
+        const std::string ephemeris_frame = uppercase_ascii(field(row, "FRAME"));
+        if (ephemeris_frame != "MOON_ICRF"
+            && ephemeris_frame != "MOON_EQUATORIAL_J2000")
             continue;
         bool invalid_track_horizon = false;
         const auto track_horizon = parse_csv_optional_double(
             field(row, "TRACK_HORIZON_MINUTES"), invalid_track_horizon);
         if (invalid_track_horizon || (track_horizon.has_value() && *track_horizon <= 0.0))
             continue;
+        SatelliteRecord& record = *found->second;
+        record.ephemeris_source = ephemeris_source;
+        record.ephemeris_frame = ephemeris_frame;
         if (track_horizon.has_value())
             record.ephemeris_track_horizon_minutes = *track_horizon;
         record.ephemeris_samples.push_back({ *time, *x, *y, *z, *vx, *vy, *vz });

@@ -3,6 +3,8 @@
 #include <draxul/log.h>
 #include <draxul/perf_timing.h>
 
+#include "satview_cache_publication.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -22,6 +24,7 @@ namespace
 
 constexpr const char* kDefaultCelestrakGroup = "active";
 constexpr std::size_t kMaxCatalogResponseBytes = 64 * 1024 * 1024;
+std::mutex g_cache_publication_mutex;
 
 std::string to_lower_ascii(std::string_view text)
 {
@@ -91,47 +94,6 @@ std::filesystem::path platform_cache_root()
 }
 
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error);
-
-bool write_text_atomic(const std::filesystem::path& path, std::string_view content, std::string& error)
-{
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec)
-    {
-        error = "failed to create cache directory: " + ec.message();
-        return false;
-    }
-
-    const std::filesystem::path tmp = path.string() + ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
-        {
-            error = "failed to open " + tmp.string();
-            return false;
-        }
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out.good())
-        {
-            error = "failed to write " + tmp.string();
-            return false;
-        }
-    }
-
-    std::filesystem::rename(tmp, path, ec);
-    if (ec)
-    {
-        std::filesystem::remove(path, ec);
-        ec.clear();
-        std::filesystem::rename(tmp, path, ec);
-        if (ec)
-        {
-            error = "failed to replace " + path.string() + ": " + ec.message();
-            return false;
-        }
-    }
-    return true;
-}
 
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error)
 {
@@ -292,7 +254,11 @@ bool write_cache_files(
     SatViewCatalogService::Clock::time_point fetched_at,
     std::string& error)
 {
-    if (!write_text_atomic(payload_path, raw_payload, error))
+    // The payload and its metadata are one publication transaction within the
+    // process. Unique temporaries protect individual files; this lock prevents
+    // two SatView service instances from interleaving the pair.
+    std::lock_guard publication_lock(g_cache_publication_mutex);
+    if (!detail::write_cache_text_atomically(payload_path, raw_payload, error))
         return false;
 
     SatViewCatalogService::CacheMetadata meta;
@@ -303,7 +269,7 @@ bool write_cache_files(
     meta.skipped_records = catalog.skipped_records;
     meta.epoch_min = epoch_range_min(catalog);
     meta.epoch_max = epoch_range_max(catalog);
-    return write_text_atomic(meta_path, serialize_metadata(meta), error);
+    return detail::write_cache_text_atomically(meta_path, serialize_metadata(meta), error);
 }
 
 template <typename ParseFunction>
@@ -489,6 +455,11 @@ void SatViewCatalogService::pump()
 
     if (should_join && worker_.joinable())
         worker_.join();
+    if (should_join)
+    {
+        std::lock_guard lock(mutex_);
+        refresh_in_flight_ = false;
+    }
     if (result.has_value())
         apply_worker_result(std::move(*result));
 }
@@ -731,7 +702,6 @@ void SatViewCatalogService::start_refresh()
 
         std::lock_guard lock(mutex_);
         pending_result_ = std::move(result);
-        refresh_in_flight_ = false;
         completion_ready_ = true;
     });
 }

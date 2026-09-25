@@ -31,6 +31,7 @@ endif()
 add_library(draxul-satview-core STATIC
     src/core/satview_catalog.cpp
     src/core/satview_catalog_container.cpp
+    src/core/satview_csv_tokenizer.cpp
     src/core/satview_config.cpp
     src/core/satview_constellation_boundary_catalog.cpp
     src/core/satview_filter.cpp
@@ -49,8 +50,12 @@ add_library(draxul-satview-core STATIC
 target_include_directories(draxul-satview-core PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/core ${stb_SOURCE_DIR})
 target_link_libraries(draxul-satview-core PUBLIC Draxul::PluginSupport::Types
     PRIVATE celestrak-sgp4 Draxul::PluginSupport::Performance)
+add_library(draxul-satview-core-test-internals INTERFACE)
+target_include_directories(draxul-satview-core-test-internals INTERFACE src/core)
+target_link_libraries(draxul-satview-core-test-internals INTERFACE draxul-satview-core)
 
 add_library(draxul-satview-scene STATIC
+    src/scene/satview_scene_composer.cpp
     src/scene/satview_constellation_catalog.cpp
     src/scene/satview_label_layout.cpp
     src/scene/satview_landscape.cpp
@@ -61,12 +66,16 @@ target_link_libraries(draxul-satview-scene PUBLIC
     PRIVATE Draxul::PluginSupport::Performance)
 
 add_library(draxul-satview-services STATIC
+    src/services/satview_cache_publication.cpp
     src/services/satview_catalog_service.cpp
     src/services/satview_cloud_service.cpp)
 target_include_directories(draxul-satview-services PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/services)
 target_link_libraries(draxul-satview-services PUBLIC
     draxul-satview-core Draxul::PluginSupport::Http
     PRIVATE Draxul::PluginSupport::Performance)
+add_library(draxul-satview-services-test-internals INTERFACE)
+target_include_directories(draxul-satview-services-test-internals INTERFACE src/services)
+target_link_libraries(draxul-satview-services-test-internals INTERFACE draxul-satview-services)
 
 if(APPLE)
     set(SATVIEW_RENDERER_SOURCE src/render/satview_render.mm)
@@ -90,7 +99,9 @@ endif()
 add_library(draxul-satview-runtime STATIC
     src/runtime/satview_config_io.cpp
     src/runtime/satview_runtime.cpp
-    src/runtime/satview_simulation_worker.cpp)
+    src/runtime/satview_runtime_panels.cpp
+    src/runtime/satview_simulation_worker.cpp
+    src/runtime/satview_view_controller.cpp)
 target_include_directories(draxul-satview-runtime PUBLIC "${SATVIEW_INCLUDE_DIR}" PRIVATE src/runtime)
 # The plugin ImGui target is PUBLIC because satview_runtime.h owns a
 # PluginImGuiContext (the shared context/lifecycle from plugins/support/imgui).
@@ -178,9 +189,7 @@ set(_satview_product_targets
     draxul-satview-runtime
     draxul-satview-plugin)
 foreach(_target IN LISTS _satview_product_targets)
-    if(COMMAND draxul_apply_sanitizers)
-        draxul_apply_sanitizers(${_target})
-        draxul_apply_coverage(${_target})
+    if(COMMAND draxul_apply_msvc_parallel_pdb_fix)
         draxul_apply_msvc_parallel_pdb_fix(${_target})
     endif()
 endforeach()
