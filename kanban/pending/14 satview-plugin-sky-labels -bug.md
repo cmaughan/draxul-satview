@@ -15,8 +15,8 @@ Production wrappers never provide the host text-service pointer required by labe
 
 **Acceptance criteria**
 
-- [ ] Cardinal and constellation labels render in actual plugin instances.
+- [x] Cardinal and constellation labels render in an actual Windows/Vulkan plugin instance.
 - [x] Run SatView aggregate tests and same-cache startup smoke.
-- [ ] Run an actual plugin label render check and verify safe Vulkan and Metal resource lifetimes.
+- [ ] Verify safe Vulkan and Metal label resource lifetimes under font/atlas refresh; confirm the labels on macOS/Metal.
 
-**2026-09-25 validation:** Product-owned UI-style plumbing already exists. Added Vulkan atlas-retirement synchronization and explicit Metal frame-slot retention for atlas revisions. The fake-host UI-style service -> real client/adapter -> runtime atlas test compiled and passed in the all-products Debug aggregate (49/49 CTest entries). Same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s), and Release startup passed (exit 0). A Windows SatView export rendered the plugin scene but did not prove visible sky labels. The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session, so it is not counted as a pass. Actual plugin label render/Metal lifetime validation remains before moving to done.
+**2026-09-25 validation:** Product-owned UI-style plumbing already exists. Added Vulkan atlas-retirement synchronization and explicit Metal frame-slot retention for atlas revisions. The fake-host UI-style service -> real client/adapter -> runtime atlas test compiled and passed in the all-products Debug aggregate (49/49 CTest entries). Same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s), and Release startup passed (exit 0). A Windows SatView export rendered the plugin scene but did not prove visible sky labels. The user subsequently confirmed that constellation and cardinal labels both appear in the actual Windows plugin instance. This confirms the Vulkan visual path, not font/atlas refresh lifetime or Metal rendering. The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session, so it is not counted as a pass. Resource-lifetime and Metal checks remain before moving to done.
