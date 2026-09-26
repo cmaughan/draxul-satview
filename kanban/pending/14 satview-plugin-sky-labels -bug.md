@@ -20,3 +20,10 @@ Production wrappers never provide the host text-service pointer required by labe
 - [ ] Verify safe Vulkan and Metal label resource lifetimes under font/atlas refresh; confirm the labels on macOS/Metal.
 
 **2026-09-25 validation:** Product-owned UI-style plumbing already exists. Added Vulkan atlas-retirement synchronization and explicit Metal frame-slot retention for atlas revisions. The fake-host UI-style service -> real client/adapter -> runtime atlas test compiled and passed in the all-products Debug aggregate (49/49 CTest entries). Same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s), and Release startup passed (exit 0). A Windows SatView export rendered the plugin scene but did not prove visible sky labels. The user subsequently confirmed that constellation and cardinal labels both appear in the actual Windows plugin instance. This confirms the Vulkan visual path, not font/atlas refresh lifetime or Metal rendering. The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session, so it is not counted as a pass. Resource-lifetime and Metal checks remain before moving to done.
+
+**macOS partial gate (2026-09-26):** The Metal app and SatView plugin built,
+the all-products unit inventory passed 47/47 CTest entries, and an exported
+native SatView frame rendered the globe, catalog stars, and HDR scene. This
+globe scenario does not show cardinal or constellation labels and does not
+exercise font/atlas refresh, so the Metal visual and resource-lifetime checkbox
+remains open.
