@@ -7,8 +7,11 @@
 #import <Metal/Metal.h>
 
 #include <array>
+#include <chrono>
 #include <filesystem>
 #include <memory>
+
+#include <unistd.h>
 
 using namespace draxul;
 using namespace draxul::satview;
@@ -21,15 +24,30 @@ TEST_CASE("SatView Metal completes overlapping cloud and label atlas revisions",
         SKIP("Metal device unavailable");
 
     const auto prior_asset_root = resolve_satview_asset_path({});
-    const auto plugin_assets = std::filesystem::path(DRAXUL_SATVIEW_TEST_BUILD_ROOT)
-        / "draxul.app/Contents/PlugIns/dev.draxul.satview/assets";
-    REQUIRE(std::filesystem::exists(plugin_assets / "../shaders/satview_scene.metallib"));
-    set_satview_asset_root(plugin_assets);
-    struct AssetRootRestore
+    // Use the compiled shader artifact directly. The installed plugin lives in
+    // a generation directory, whose name changes on every staging run.
+    const auto shader = std::filesystem::path(DRAXUL_SATVIEW_TEST_METALLIB);
+    REQUIRE(std::filesystem::exists(shader));
+    const auto fixture_root = std::filesystem::temp_directory_path()
+        / ("draxul-satview-metal-refresh-" + std::to_string(getpid()) + "-"
+            + std::to_string(std::chrono::steady_clock::now()
+                    .time_since_epoch().count()));
+    struct FixtureRestore
     {
-        std::filesystem::path root;
-        ~AssetRootRestore() { set_satview_asset_root(root); }
-    } restore{ prior_asset_root };
+        std::filesystem::path prior_asset_root;
+        std::filesystem::path fixture_root;
+        ~FixtureRestore()
+        {
+            set_satview_asset_root(prior_asset_root);
+            std::error_code error;
+            std::filesystem::remove_all(fixture_root, error);
+        }
+    } restore{ prior_asset_root, fixture_root };
+    REQUIRE(std::filesystem::create_directories(fixture_root / "assets"));
+    REQUIRE(std::filesystem::create_directories(fixture_root / "shaders"));
+    REQUIRE(std::filesystem::copy_file(shader,
+        fixture_root / "shaders/satview_scene.metallib"));
+    set_satview_asset_root(fixture_root / "assets");
 
     id<MTLCommandQueue> queue = [device newCommandQueue];
     REQUIRE(queue != nil);

@@ -46,3 +46,12 @@ directly (0.85 s). Debug core + SatView aggregate and startup smoke passed
 earlier in this session, before the final shared-event gate was added; the
 final gate was validated in Release. No remote Windows test was needed for
 this Metal-specific work.
+
+**Hosted CI correction (2026-09-29):** The first hosted macOS run reached the
+test but exposed an incorrect test-only assumption that the staged plugin
+shader always lived at a fixed bundle path. Plugin staging uses generation
+directories, so the test now copies the compiled Metal library into its own
+temporary asset fixture and depends directly on the shader compile target.
+The corrected GPU case passed locally with 23 assertions. The hosted run also
+had unrelated render snapshot and SDK-smoke failures; its full suite did not
+pass.
