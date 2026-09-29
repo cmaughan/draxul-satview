@@ -198,6 +198,8 @@ set(_satview_shader_payload)
 file(GLOB _satview_test_sources CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/satview_*_tests.cpp")
 if(APPLE)
+    list(APPEND _satview_test_sources
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/satview_metal_texture_refresh_tests.mm")
     list(APPEND _satview_shader_payload
         "${SATVIEW_PLUGIN_METALLIB}=>shaders/satview_scene.metallib")
     set(_satview_shader_dependencies "${SATVIEW_PLUGIN_METALLIB}")

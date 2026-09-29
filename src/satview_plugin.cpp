@@ -178,6 +178,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         instance->angle = config->value("initial_angle", 0.0f);
         instance->initial_paused = config->value("paused", false);
         instance->remember_state = config->value("remember_state", true);
+        instance->saved_config_toml = config->value("satview_config_toml", std::string{});
     }
     catch (...)
     {

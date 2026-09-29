@@ -10,6 +10,10 @@ draxul tab create --space <space-id> --name SatView \
   --plugin dev.draxul.satview --json
 ```
 
+Plugin launch JSON accepts `satview_config_toml` to apply scene settings at
+creation. Set `remember_state` to `false` when using it for deterministic
+render captures, so previously saved pane settings cannot override it.
+
 ## Overview
 
 Optional satellite-overview host with switchable interactive 3D globe, full-screen 2D equirectangular map, and Earth ground-observer sky views with default stereographic or conventional perspective projection, a hierarchical Sun/planet/major-moon POV dropdown for globe/map views, date-aware day/night lighting, a real-scale ephemeris-driven Moon with an 8k NASA LRO texture and analytical orbit track, a real-scale date-aware rotating Sun with an emissive 4k Solar System Scope texture, normalized planet/major-moon body views with selectable natural bodies, Sun-view per-planet orbit-track checkboxes, layered Saturn disk rings, a ray-marched Rayleigh/Mie atmosphere, a Hipparcos tiny-quad starfield with persisted apparent-magnitude window and brightness controls, optional constellation figures and an oriented 4k NASA Milky Way background, an elevated cloud shell using bundled clouds by default with an optional asynchronously cached near-real-time source, independently cached CelesTrak active-GP and SATCAT catalogs, precise SGP4 propagation plus clearly marked SATCAT summary estimates, population coloring/filtering for active payloads, inactive payloads, rocket bodies, debris, and unknown objects, all-sampled or selected-only path display, track/marker LOD controls, click and tree selection, an ImGui filter/details panel with a live simulation-clock readout in the user's local timezone, a `Real Time` action that restores the current system time at `1x`, smoothed quaternion left-drag orbit controls, Ctrl+drag and mouse-wheel dolly, MegaCity-style keyboard orbit/dolly controls, reset camera (`Home`), data refresh (`Ctrl+R`), panel toggle (`F1`), and time-speed controls (`Space`, `[`, `]`)

@@ -17,7 +17,7 @@ Production wrappers never provide the host text-service pointer required by labe
 
 - [x] Cardinal and constellation labels render in an actual Windows/Vulkan plugin instance.
 - [x] Run SatView aggregate tests and same-cache startup smoke.
-- [ ] Verify safe Vulkan and Metal label resource lifetimes under font/atlas refresh; confirm the labels on macOS/Metal.
+- [x] Verify safe Vulkan and Metal label resource lifetimes under font/atlas refresh; confirm the labels on macOS/Metal.
 
 **2026-09-25 validation:** Product-owned UI-style plumbing already exists. Added Vulkan atlas-retirement synchronization and explicit Metal frame-slot retention for atlas revisions. The fake-host UI-style service -> real client/adapter -> runtime atlas test compiled and passed in the all-products Debug aggregate (49/49 CTest entries). Same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s), and Release startup passed (exit 0). A Windows SatView export rendered the plugin scene but did not prove visible sky labels. The user subsequently confirmed that constellation and cardinal labels both appear in the actual Windows plugin instance. This confirms the Vulkan visual path, not font/atlas refresh lifetime or Metal rendering. The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session, so it is not counted as a pass. Resource-lifetime and Metal checks remain before moving to done.
 
@@ -27,3 +27,25 @@ native SatView frame rendered the globe, catalog stars, and HDR scene. This
 globe scenario does not show cardinal or constellation labels and does not
 exercise font/atlas refresh, so the Metal visual and resource-lifetime checkbox
 remains open.
+
+**macOS completion (2026-09-29):** Added `satview_config_toml` launch JSON so
+render scenarios can explicitly enable labels without depending on prior
+pane state. The persistent `satview-plugin.toml` globe scenario now enables
+constellation labels, and `satview-labels-ground.toml` enables constellation
+and cardinal labels with a 200-degree stereographic view. Metal exports
+completed with 4x MSAA. Visual inspection found constellation names in both
+captures and N/E/S/W around the ground horizon. The shared Metal GPU test
+submits eight same-size atlas and cloud revisions across two frame slots;
+a shared event holds frame 0 until frame 1 is submitted, then each slot is
+reused only after its command buffer completes. All 20 focused assertions
+passed, as did the aggregate. Vulkan's existing atlas upload waits for device
+idle before replacing the descriptor/readers; its prior Windows visual check
+remains recorded above. No Vulkan code changed in this slice.
+
+**Validation cost:** Release core + SatView aggregate passed 28/28 entries
+(33.76 s); same-cache Release startup smoke passed. Both GPU render exports
+passed and were inspected. Earlier Debug core + SatView aggregate passed
+28/28 entries (41.89 s), with same-cache Debug smoke. Final GPU test was
+also run directly (1 case, 20 assertions, 0.85 s) to confirm it executed
+rather than skipped. Release configure/build was repeated after adding the
+Metal gate; no remote Windows test was run for the macOS-only gate.

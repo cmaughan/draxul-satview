@@ -14,9 +14,9 @@ Same-sized cloud updates overwrite a texture that an earlier asynchronous frame 
 
 **Acceptance criteria**
 
-- [ ] Repeated same-sized refreshes remain correct with multiple frames in flight.
+- [x] Repeated same-sized refreshes remain correct with multiple frames in flight.
 - [x] Run SatView aggregate tests and same-cache startup smoke; inspect Vulkan parity.
-- [ ] Run Metal refresh/render checks on macOS, including repeated same-sized updates with multiple frames in flight.
+- [x] Run Metal refresh/render checks on macOS, including repeated same-sized updates with multiple frames in flight.
 - [x] Keep this scope separate from Vulkan stream-buffer lifetime. The previously referenced card 36 is absent from this board; this change only adds synchronization for cloud and label texture refresh, not stream-buffer handling.
 
 **2026-09-25 validation:** Metal implementation changed, and Vulkan cloud/label uploads now drain existing readers before mutating or rewriting shared descriptors. All-products Debug aggregate passed 49/49 CTest entries; same-cache Debug startup passed with `py do.py run debug --console -- --smoke-test` (~48 s). The fixed 30 s `smoke --skip-build` timed out on the existing nine-pane Session; it is not counted as a pass. macOS Metal build/render validation remains; this card stays pending until then.
@@ -26,3 +26,23 @@ the all-products unit inventory passed 47/47 CTest entries, and a native
 SatView frame export completed with Metal 4x MSAA. The export is a static
 frame; it does not prove repeated same-sized cloud refreshes with frames in
 flight. Both refresh-specific checkboxes remain open.
+
+**macOS completion (2026-09-29):** The new Metal GPU integration test submits
+eight 8x8 cloud revisions and eight 8x8 label-atlas revisions through the
+real SatView scene prepass. Frame 0 waits on a shared Metal event while frame
+1 uploads and submits, proving that two command buffers are outstanding
+across a same-size replacement. The test waits for completion before reusing
+slots and checks all buffers completed successfully (20 assertions). Code
+inspection confirms each revision creates a new Metal texture and each frame
+slot retains the cloud/atlas texture sampled by that frame. No shared texture
+is overwritten in place. The real SatView render exports also passed with
+Metal 4x MSAA; this card's refresh-specific condition is covered by the GPU
+test, not by those static captures. Vulkan parity remains the earlier
+reader-drain implementation and does not involve stream-buffer lifetime.
+
+**Validation cost:** Release core + SatView aggregate passed 28/28 entries
+(33.76 s), and same-cache Release smoke passed. The GPU case also passed
+directly (0.85 s). Debug core + SatView aggregate and startup smoke passed
+earlier in this session, before the final shared-event gate was added; the
+final gate was validated in Release. No remote Windows test was needed for
+this Metal-specific work.
