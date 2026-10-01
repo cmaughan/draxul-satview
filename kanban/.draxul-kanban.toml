@@ -1,0 +1,6 @@
+version = 1
+columns = ["ice-box", "pending", "done"]
+[cards]
+ice-box = ["40 satview-atmosphere-scattering-deduplication -refactor.md", "41 satview-network-privacy-controls -feature.md", "42 satview-shader-abi-parity -test.md"]
+pending = ["01 satview-test-boundaries -refactor.md", "02 satview-configuration-ownership -refactor.md", "03 satview-scene-frame-composition -refactor.md", "04 satview-inactive-propagation -perf.md", "05 satview-texture-startup -perf.md", "06 satview-catalog-publication -perf.md", "07 satview-lunar-track-uploads -perf.md", "08 satview-resize-target-lifetime -perf.md"]
+done = []
