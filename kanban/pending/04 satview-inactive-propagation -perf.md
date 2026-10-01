@@ -1,5 +1,7 @@
 # Stop settled inactive satellite propagation
 
+**Summary:** Stop repeatedly calculating satellite positions once a paused or hidden SatView has settled so inactive panes do not keep using processor time.
+
 **Source:** `plugins/satview/src/runtime/satview_simulation_worker.cpp`  
 **Priority/evidence:** P1; static, high confidence. **Reported by:** Claude, Codex. Lines 310, 376, and 476 retain a 16 ms propagation loop; pause suppresses only the future sample, and `satview_plugin.cpp:272–282` does not pass visibility to the worker. Model and track caches still leave current-position propagation.
 

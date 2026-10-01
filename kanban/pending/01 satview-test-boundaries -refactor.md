@@ -1,5 +1,7 @@
 # Separate SatView CPU, scene and native tests
 
+**Summary:** Separate SatView's data and scene tests from its graphics tests so ordinary calculations can be tested without building the full renderer.
+
 **Priority:** P2 — catalog/scene cases inherit runtime, renderer, SDL and Metal shader build.  
 **Source:** `plugins/satview/cmake/Tests.cmake`  
 **Proposed by:** Claude 49; Codex 5. **Owner:** one SatView test agent. **Depends on:** root card 02.  

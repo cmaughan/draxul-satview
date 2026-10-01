@@ -1,5 +1,7 @@
 # Put SatView surface projection and frame description in scene
 
+**Summary:** Use the same placement and visibility calculations for drawing and selecting SatView objects so clicking an object agrees with where it appears.
+
 **Priority:** P2 — draw and picking repeat visibility/position choices.  
 **Source:** `plugins/satview/src/runtime/satview_runtime.cpp`  
 **Proposed by:** Claude 25; Codex 7. **Owner:** one SatView scene agent; serialize with card 02.  

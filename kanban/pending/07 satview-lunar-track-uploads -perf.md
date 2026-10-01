@@ -1,5 +1,7 @@
 # Rebuild only lunar-dependent SatView tracks
 
+**Summary:** Update only the tracks affected by the Moon's movement so stable Earth tracks are not rebuilt and sent to the graphics card unnecessarily.
+
 **Source:** `plugins/satview/src/runtime/satview_runtime.cpp`  
 **Priority/evidence:** P2; static, medium-high confidence. **Reported by:** Claude. Lines 1217–1226 trigger reanchoring when any lunar track is present; lines 1248–1270 recompose and upload the whole track vector, including stable Earth tracks. Other dirty/source/window gates are bypassed by that condition.
 

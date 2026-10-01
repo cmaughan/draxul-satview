@@ -1,5 +1,7 @@
 # Retire SatView resize targets without device-wide waits
 
+**Summary:** Replace SatView's size-dependent drawing resources after their current use finishes so resizing a pane does not repeatedly wait for all graphics work to stop.
+
 **Source:** `plugins/satview/src/render/satview_render_vk.cpp`  
 **Priority/evidence:** P2; static, medium-high confidence. **Reported by:** Claude. Lines 1057–1099 wait for device idle and recreate all frame targets on exact size changes; debug difference resources are also required when unused. Dragging a divider can repeat this work.
 

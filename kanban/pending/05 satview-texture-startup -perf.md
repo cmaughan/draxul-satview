@@ -1,5 +1,7 @@
 # Remove blocking SatView texture setup from first render
 
+**Summary:** Prepare SatView's planet and sky images in the background so opening the view and refreshing clouds do not block the interface while images load.
+
 **Source:** `plugins/satview/src/render/satview_render_vk.cpp`  
 **Priority/evidence:** P2; static, high confidence. **Reported by:** Claude. Lines 515–545 decode and immediately upload Earth, Moon, Sun, and Milky Way images during first render; Metal has analogous synchronous setup at `satview_render.mm:135–151`. Vulkan cloud replacement also waits idle at line 681. Actual decoded bytes and stall duration remain unmeasured.
 

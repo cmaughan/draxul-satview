@@ -1,5 +1,7 @@
 # Make SatView persistent configuration authoritative
 
+**Summary:** Store each persistent SatView setting in one authoritative place so saved settings and live controls do not drift apart through duplicate copies.
+
 **Priority:** P2 — roughly fifty settings are mirrored between runtime fields and config.  
 **Source:** `plugins/satview/src/runtime/satview_runtime.cpp`  
 **Proposed by:** Claude 25, with part of 48. **Owner:** one SatView runtime agent; serialize with card 03.  
