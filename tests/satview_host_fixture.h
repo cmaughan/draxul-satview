@@ -94,6 +94,10 @@ public:
     {
         return host.running_;
     }
+    static ImGuiContext* imgui_context(const SatViewHost& host)
+    {
+        return host.imgui_.context();
+    }
     static bool paused(const SatViewHost& host)
     {
         return host.paused_;

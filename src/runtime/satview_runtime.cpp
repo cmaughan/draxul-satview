@@ -763,7 +763,12 @@ void SatViewRuntime::shutdown()
     running_ = false;
     dragging_ = false;
     pending_click_ = false;
-    scene_pass_.reset();
+    // Diagnostic descriptors, including retired resize targets, must be removed
+    // under this pane's context before its backend and descriptor pool shut down.
+    {
+        plugin_support::ScopedImGuiContext owner_context(imgui_.context());
+        scene_pass_.reset();
+    }
     scene_text_atlas_.reset();
     if (scene_text_service_)
         scene_text_service_->shutdown();

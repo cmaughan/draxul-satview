@@ -23,6 +23,7 @@
 #include <draxul/host.h>
 #include <draxul/plugin_adapter.h>
 #include <draxul/plugin_gpu_imgui.h>
+#include <draxul/plugin_imgui_context.h>
 #include <draxul/satview/satview_config.h>
 
 
@@ -168,6 +169,96 @@ TEST_CASE("SatView host initializes, draws, and shuts down offline", "[satview][
     offline.host.shutdown();
     CHECK_FALSE(offline.host.is_running());
     CHECK_FALSE(SatViewHostTestAccess::running(offline.host));
+}
+
+TEST_CASE("SatView closing a pane preserves another pane's context and releases its scene first",
+    "[satview][host][smoke]")
+{
+    struct ShutdownBackend : IImGuiHost
+    {
+        SatViewRuntime* owner = nullptr;
+        ImGuiContext* shutdown_context = nullptr;
+        bool scene_alive_at_shutdown = true;
+        bool initialize_imgui_backend() override { return true; }
+        void shutdown_imgui_backend() override
+        {
+            shutdown_context = ImGui::GetCurrentContext();
+            scene_alive_at_shutdown = SatViewHostTestAccess::scene_pass_attached(*owner);
+        }
+        void rebuild_imgui_font_texture() override {}
+        void begin_imgui_frame() override {}
+    } backend;
+    OfflineSatViewHost offline;
+    REQUIRE(offline.initialize(false));
+    backend.owner = &offline.host;
+    offline.host.attach_imgui_host(backend);
+    ImGuiContext* owner_context = SatViewHostTestAccess::imgui_context(offline.host);
+    plugin_support::PluginImGuiContext other_pane;
+    REQUIRE(other_pane.create());
+    tests::FakeTermRenderer other_backend;
+    SECTION("another rendered pane is current")
+    {
+        other_pane.attach_host(other_backend);
+    }
+    SECTION("an unrendered pane is current")
+    {
+        CHECK(ImGui::GetIO().BackendRendererUserData == nullptr);
+    }
+
+    offline.host.shutdown();
+    CHECK(backend.shutdown_context == owner_context);
+    CHECK_FALSE(backend.scene_alive_at_shutdown);
+    CHECK(ImGui::GetCurrentContext() == other_pane.context());
+    // The remaining pane can still use its own IO after the first is closed.
+    ImGui::GetIO().DisplaySize = ImVec2(640.0f, 480.0f);
+    CHECK(ImGui::GetIO().DisplaySize.x == 640.0f);
+    offline.host.shutdown();
+    CHECK(ImGui::GetCurrentContext() == other_pane.context());
+    other_pane.destroy();
+}
+
+TEST_CASE("Plugin texture owner scopes restore nested and absent contexts", "[satview][host][smoke]")
+{
+    plugin_support::PluginImGuiContext owner;
+    plugin_support::PluginImGuiContext other;
+    REQUIRE(owner.create());
+    REQUIRE(other.create());
+    {
+        plugin_support::ScopedImGuiContext owner_scope(owner.context());
+        CHECK(ImGui::GetCurrentContext() == owner.context());
+        {
+            plugin_support::ScopedImGuiContext absent_scope(nullptr);
+            CHECK(ImGui::GetCurrentContext() == nullptr);
+        }
+        CHECK(ImGui::GetCurrentContext() == owner.context());
+    }
+    CHECK(ImGui::GetCurrentContext() == other.context());
+    owner.destroy();
+    CHECK(ImGui::GetCurrentContext() == other.context());
+    other.destroy();
+    CHECK(ImGui::GetCurrentContext() == nullptr);
+}
+
+TEST_CASE("Plugin GPU context can close before its backend's first frame", "[satview][host][smoke]")
+{
+    // Use the real plugin host with no borrowed GPU frame: backend creation is
+    // lazy, matching a hidden pane that has never rendered. The core test binary
+    // also contains the host renderer's ImGui backend, so test the plugin-owned
+    // lifecycle API instead of calling ambiguous raw Vulkan backend symbols.
+    auto backend = plugin_support::create_gpu_imgui_host();
+    plugin_support::PluginImGuiContext unrendered_pane;
+    REQUIRE(unrendered_pane.create());
+    unrendered_pane.attach_host(*backend);
+    CHECK(unrendered_pane.active());
+    CHECK(ImGui::GetIO().BackendRendererUserData == nullptr);
+    plugin_support::PluginImGuiContext other_pane;
+    REQUIRE(other_pane.create());
+    unrendered_pane.destroy();
+    CHECK_FALSE(unrendered_pane.active());
+    CHECK(ImGui::GetCurrentContext() == other_pane.context());
+    CHECK(ImGui::GetIO().BackendRendererUserData == nullptr);
+    backend.reset();
+    CHECK(ImGui::GetCurrentContext() == other_pane.context());
 }
 
 TEST_CASE("SatView dynamic plugin font builds constellation labels without an app text service",

@@ -10,6 +10,7 @@
 #include <cstring>
 #include <draxul/log.h>
 #include <draxul/perf_timing.h>
+#include <draxul/plugin_imgui_context.h>
 #include <draxul/runtime_path.h>
 #include <draxul/vulkan/vk_render_context.h>
 #include <filesystem>
@@ -185,6 +186,7 @@ struct SatViewScenePass::State
         VkDescriptorSet post_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet present_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet debug_descriptor_set = VK_NULL_HANDLE;
+        ImGuiContext* imgui_texture_context = nullptr;
         VkDescriptorSet imgui_hdr_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet imgui_final_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet imgui_msaa_descriptor_set = VK_NULL_HANDLE;
@@ -378,7 +380,9 @@ struct SatViewScenePass::State
         }
         for (auto& targets : targets_to_destroy)
         {
-            if (ImGui::GetCurrentContext())
+            plugin_support::ScopedImGuiContext owner_context(targets.imgui_texture_context);
+            if (targets.imgui_texture_context
+                && ImGui::GetIO().BackendRendererUserData)
             {
                 if (targets.imgui_hdr_descriptor_set != VK_NULL_HANDLE)
                     ImGui_ImplVulkan_RemoveTexture(targets.imgui_hdr_descriptor_set);
@@ -2395,6 +2399,13 @@ void SatViewScenePass::render_hdr_debug_ui()
     if (state_->hdr_targets.empty() || state_->hdr_sampler == VK_NULL_HANDLE)
         return;
     auto& targets = state_->hdr_targets[state_->last_prepass_frame % static_cast<uint32_t>(state_->hdr_targets.size())];
+
+    if (ImGui::GetCurrentContext() == nullptr
+        || ImGui::GetIO().BackendRendererUserData == nullptr)
+        return;
+    if (targets.imgui_texture_context == nullptr)
+        targets.imgui_texture_context = ImGui::GetCurrentContext();
+    plugin_support::ScopedImGuiContext owner_context(targets.imgui_texture_context);
 
     if (targets.imgui_hdr_descriptor_set == VK_NULL_HANDLE)
     {

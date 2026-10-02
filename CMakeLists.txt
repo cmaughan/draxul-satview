@@ -86,7 +86,7 @@ add_library(draxul-satview-renderer STATIC ${SATVIEW_RENDERER_SOURCE})
 target_include_directories(draxul-satview-renderer PRIVATE src/render)
 target_link_libraries(draxul-satview-renderer PUBLIC draxul-satview-scene)
 target_link_libraries(draxul-satview-renderer PRIVATE
-    Draxul::PluginSupport::Performance draxul-satview-core imgui)
+    Draxul::PluginSupport::Performance Draxul::PluginSupport::ImGui draxul-satview-core imgui)
 if(APPLE)
     find_library(SATVIEW_METAL_FRAMEWORK Metal REQUIRED)
     target_link_libraries(draxul-satview-renderer PRIVATE ${SATVIEW_METAL_FRAMEWORK})
