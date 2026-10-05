@@ -163,6 +163,10 @@ struct CatalogParseResult
 [[nodiscard]] SatellitePopulationCounts satellite_population_counts(const SatelliteCatalog& catalog);
 [[nodiscard]] std::size_t renderable_satellite_count(const SatelliteCatalog& catalog);
 
+// Maximum container depth (arrays and objects, including the outer record
+// array and each record object) accepted in CelesTrak GP JSON documents.
+inline constexpr std::size_t kSatViewCatalogJsonMaxNestingDepth = 64;
+
 [[nodiscard]] CatalogParseResult parse_celestrak_gp_json(
     std::string_view json,
     std::string_view source_label = {},

@@ -111,6 +111,74 @@ TEST_CASE("SatView catalog skips malformed GP objects", "[satview][catalog]")
     CHECK(result.catalog.objects[0].orbit_class == OrbitClass::MediumEarth);
 }
 
+namespace
+{
+
+// One valid GP record whose ignored EXTRA field nests `extra_depth` arrays.
+// The outer record array and the record object occupy the first two levels.
+std::string gp_json_with_nested_extra(std::size_t extra_depth, char open = '[', char close = ']')
+{
+    std::string json = R"json([{"OBJECT_NAME":"DEEP","OBJECT_ID":"2026-009A",)json"
+                       R"json("EPOCH":"2026-06-26T00:00:00.000000","MEAN_MOTION":15.5,)json"
+                       R"json("ECCENTRICITY":0.0005,"INCLINATION":51.6,"RA_OF_ASC_NODE":120.0,)json"
+                       R"json("ARG_OF_PERICENTER":87.0,"MEAN_ANOMALY":273.0,"NORAD_CAT_ID":909001,)json"
+                       R"json("EXTRA":)json";
+    json.reserve(json.size() + extra_depth * 6 + 8);
+    for (std::size_t i = 0; i < extra_depth; ++i)
+        json += open == '{' ? std::string(R"({"k":)") : std::string(1, open);
+    json += "0";
+    json.append(extra_depth, close);
+    json += "}]";
+    return json;
+}
+
+} // namespace
+
+TEST_CASE("SatView GP JSON parser bounds nesting depth", "[satview][catalog][json]")
+{
+    constexpr std::size_t kLimit = draxul::satview::kSatViewCatalogJsonMaxNestingDepth;
+
+    SECTION("arrays at the permitted boundary parse normally")
+    {
+        const auto result = parse_celestrak_gp_json(gp_json_with_nested_extra(kLimit - 2));
+        REQUIRE(result);
+        REQUIRE(result.catalog.objects.size() == 1);
+        CHECK(result.catalog.objects[0].norad_catalog_id == 909001);
+    }
+    SECTION("objects at the permitted boundary parse normally")
+    {
+        const auto result = parse_celestrak_gp_json(gp_json_with_nested_extra(kLimit - 2, '{', '}'));
+        REQUIRE(result);
+        CHECK(result.catalog.objects.size() == 1);
+    }
+    SECTION("one level beyond the boundary fails with a diagnostic")
+    {
+        for (const char open : { '[', '{' })
+        {
+            const auto result = parse_celestrak_gp_json(
+                gp_json_with_nested_extra(kLimit - 1, open, open == '[' ? ']' : '}'));
+            CHECK_FALSE(result);
+            CHECK(result.catalog.objects.empty());
+            CHECK(result.error.find("JSON nesting exceeds") != std::string::npos);
+        }
+    }
+    SECTION("hostile depth fails without exhausting the stack")
+    {
+        for (const char open : { '[', '{' })
+        {
+            const auto result = parse_celestrak_gp_json(
+                gp_json_with_nested_extra(2'000'000, open, open == '[' ? ']' : '}'));
+            CHECK_FALSE(result);
+            CHECK(result.error.find("JSON nesting exceeds") != std::string::npos);
+        }
+        // Unterminated nesting is rejected by the depth limit before EOF.
+        const auto unterminated = parse_celestrak_gp_json(
+            R"([{"EXTRA":)" + std::string(1'000'000, '['));
+        CHECK_FALSE(unterminated);
+        CHECK(unterminated.error.find("JSON nesting exceeds") != std::string::npos);
+    }
+}
+
 TEST_CASE("SatView sample catalog fixture loads offline", "[satview][catalog]")
 {
     const auto result = draxul::satview::load_sample_satellite_catalog();

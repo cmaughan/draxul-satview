@@ -458,6 +458,53 @@ TEST_CASE("SatView catalog service keeps stale cache when refresh fails", "[satv
     CHECK(status.text.find("SATCAT: cached 1") != std::string::npos);
 }
 
+TEST_CASE("SatView catalog service rejects excessively nested GP JSON at every entry point",
+    "[satview][catalog][service][json]")
+{
+    const std::size_t depth = 200'000;
+    const std::string deep_gp = R"([{"NORAD_CAT_ID":1,"EXTRA":)" + std::string(depth, '[')
+        + std::string(depth, ']') + "}]";
+    draxul::tests::TempDir temp("satview-catalog-service-deep-json");
+    {
+        SatViewCatalogService seeder;
+        seeder.start(config_for(temp.path, payload_fetch(kOneObjectJson, kOneObjectSatcat)));
+        REQUIRE(wait_for_idle(seeder));
+    }
+    const auto gp_cache = temp.path / "celestrak_active_gp.json";
+
+    SECTION("a network refresh keeps the usable catalog and the cached payload")
+    {
+        auto config = config_for(temp.path, payload_fetch(deep_gp, kOneObjectSatcat));
+        config.refresh_interval = std::chrono::seconds::zero();
+        SatViewCatalogService service;
+        service.start(std::move(config));
+        REQUIRE(wait_for_idle(service));
+
+        const auto status = service.status();
+        CHECK(status.gp.data_source == SatViewCatalogService::DataSource::Cache);
+        CHECK(status.object_count == 1);
+        CHECK(status.error.find("JSON nesting exceeds") != std::string::npos);
+        CHECK(read_file(gp_cache) == kOneObjectJson);
+    }
+    SECTION("a nested startup cache falls back to the bundled sample")
+    {
+        write_file(gp_cache, deep_gp);
+        std::filesystem::remove(temp.path / "celestrak_satcat.csv");
+        std::filesystem::remove(temp.path / "celestrak_satcat.meta");
+        SatViewCatalogService service;
+        service.start(config_for(temp.path, [](std::string_view, std::string& error) {
+            error = "offline";
+            return std::string{};
+        }));
+        REQUIRE(wait_for_idle(service));
+
+        const auto status = service.status();
+        CHECK(status.data_source == SatViewCatalogService::DataSource::Sample);
+        CHECK(status.object_count == 4);
+        CHECK(status.gp.data_source == SatViewCatalogService::DataSource::None);
+    }
+}
+
 TEST_CASE("SatView catalog service refreshes GP and SATCAT on independent cadences", "[satview][catalog][service]")
 {
     draxul::tests::TempDir temp("satview-catalog-service");

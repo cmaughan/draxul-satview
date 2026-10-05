@@ -167,9 +167,12 @@ public:
         skip_ws();
         if (consume('{'))
         {
+            if (!enter_container(error))
+                return false;
             JsonObject object;
             if (!parse_object_body(object, error))
                 return false;
+            leave_container();
             objects.push_back(std::move(object));
             skip_ws();
             if (!at_end())
@@ -179,6 +182,8 @@ public:
 
         if (!consume('['))
             return fail(error, "expected JSON array or object");
+        if (!enter_container(error))
+            return false;
         skip_ws();
         if (consume(']'))
             return true;
@@ -188,9 +193,12 @@ public:
             if (!consume('{'))
                 return fail(error, "expected object in JSON array");
 
+            if (!enter_container(error))
+                return false;
             JsonObject object;
             if (!parse_object_body(object, error))
                 return false;
+            leave_container();
             objects.push_back(std::move(object));
 
             skip_ws();
@@ -271,12 +279,44 @@ private:
             return true;
         }
 
+        // Ignored nested values are skipped recursively, so every container
+        // counts against the document depth before recursing. Malformed or
+        // hostile payloads fail with a diagnostic instead of exhausting the
+        // (worker or main) thread stack.
         if (consume('{'))
-            return skip_object(error);
+        {
+            if (!enter_container(error))
+                return false;
+            const bool skipped = skip_object(error);
+            leave_container();
+            return skipped;
+        }
         if (consume('['))
-            return skip_array(error);
+        {
+            if (!enter_container(error))
+                return false;
+            const bool skipped = skip_array(error);
+            leave_container();
+            return skipped;
+        }
 
         return fail(error, "unsupported JSON value");
+    }
+
+    bool enter_container(std::string& error)
+    {
+        if (depth_ >= kSatViewCatalogJsonMaxNestingDepth)
+        {
+            return fail(error,
+                "JSON nesting exceeds " + std::to_string(kSatViewCatalogJsonMaxNestingDepth) + " levels");
+        }
+        ++depth_;
+        return true;
+    }
+
+    void leave_container()
+    {
+        --depth_;
     }
 
     bool skip_object(std::string& error)
@@ -513,6 +553,7 @@ private:
 
     std::string_view input_;
     size_t pos_ = 0;
+    std::size_t depth_ = 0;
 };
 
 std::optional<std::string> string_field(const JsonObject& object, const char* key)
