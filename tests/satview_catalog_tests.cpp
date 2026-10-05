@@ -3,7 +3,15 @@
 #include <draxul/satview/satview_catalog.h>
 #include <draxul/satview/satview_texture_assets.h>
 
+#include "temp_dir.h"
+
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <limits>
+#include <string>
+#include <string_view>
+#include <utility>
 
 using draxul::satview::apply_lunar_disposition_csv;
 using draxul::satview::apply_sampled_ephemeris_csv;
@@ -176,6 +184,89 @@ TEST_CASE("SatView GP JSON parser bounds nesting depth", "[satview][catalog][jso
             R"([{"EXTRA":)" + std::string(1'000'000, '['));
         CHECK_FALSE(unterminated);
         CHECK(unterminated.error.find("JSON nesting exceeds") != std::string::npos);
+    }
+}
+
+namespace
+{
+
+std::string gp_json_record_with_id(std::string_view id_literal)
+{
+    return std::string(R"json({"OBJECT_NAME":"ID","OBJECT_ID":"2026-010A",)json"
+                       R"json("EPOCH":"2026-06-26T00:00:00.000000","MEAN_MOTION":15.5,)json"
+                       R"json("ECCENTRICITY":0.0005,"INCLINATION":51.6,"RA_OF_ASC_NODE":120.0,)json"
+                       R"json("ARG_OF_PERICENTER":87.0,"MEAN_ANOMALY":273.0,"NORAD_CAT_ID":)json")
+        + std::string(id_literal) + "}";
+}
+
+} // namespace
+
+TEST_CASE("SatView GP catalog identifiers are validated before conversion", "[satview][catalog][catalog-id]")
+{
+    SECTION("out-of-domain identifiers are skipped as malformed")
+    {
+        for (const std::string_view literal : {
+                 "-9223372036854775808", // INT64_MIN
+                 "9223372036854775807", // INT64_MAX rounds to the 2^63 endpoint
+                 "9223372036854775808", // 2^63
+                 "1e300",
+                 "9007199254740992", // 2^53: no longer exact
+                 "0",
+                 "-1",
+                 "25544.5",
+                 R"("-9223372036854775808")",
+                 R"("9223372036854775808")",
+                 R"("0")",
+                 R"("25544.0")",
+                 R"("abc")",
+                 "true",
+                 "null" })
+        {
+            CAPTURE(literal);
+            const auto result = parse_celestrak_gp_json("[" + gp_json_record_with_id(literal) + ","
+                + gp_json_record_with_id("43013") + "]");
+            REQUIRE(result);
+            REQUIRE(result.catalog.objects.size() == 1);
+            CHECK(result.catalog.objects.front().norad_catalog_id == 43013);
+            CHECK(result.catalog.skipped_records == 1);
+            CHECK(result.catalog.malformed_records == 1);
+            // A document holding only invalid identifiers is a failed parse.
+            CHECK_FALSE(parse_celestrak_gp_json("[" + gp_json_record_with_id(literal) + "]"));
+        }
+    }
+    SECTION("valid identifiers retain their identity")
+    {
+        const std::pair<std::string_view, std::int64_t> cases[] = {
+            { "1", 1 },
+            { "25544", 25544 },
+            { "25544.0", 25544 },
+            { "9007199254740991", 9007199254740991 }, // 2^53 - 1
+            { R"("900002")", 900002 },
+            { R"("9223372036854775807")", std::numeric_limits<std::int64_t>::max() },
+        };
+        for (const auto& [literal, expected] : cases)
+        {
+            CAPTURE(literal);
+            const auto result = parse_celestrak_gp_json("[" + gp_json_record_with_id(literal) + "]");
+            REQUIRE(result);
+            REQUIRE(result.catalog.objects.size() == 1);
+            CHECK(result.catalog.objects.front().norad_catalog_id == expected);
+        }
+    }
+    SECTION("a tampered bundled sample cannot bypass validation through startup fallback")
+    {
+        draxul::tests::TempDir temp("satview-catalog-tampered-sample");
+        std::filesystem::create_directories(temp.path / "catalog");
+        {
+            std::ofstream out(temp.path / "catalog/sample_gp.json", std::ios::binary);
+            out << "[" << gp_json_record_with_id("-9223372036854775808") << ","
+                << gp_json_record_with_id("0") << "," << gp_json_record_with_id("43013") << "]";
+        }
+        const auto result = draxul::satview::load_sample_satellite_catalog(temp.path);
+        REQUIRE(result);
+        REQUIRE(result.catalog.objects.size() == 1);
+        CHECK(result.catalog.objects.front().norad_catalog_id == 43013);
+        CHECK(result.catalog.skipped_records == 2);
     }
 }
 

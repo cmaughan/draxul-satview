@@ -2,6 +2,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <cmath>
+#include <cstdint>
 #include <draxul/satview/satview_catalog.h>
 #include <draxul/satview/satview_moon_ephemeris.h>
 #include <draxul/satview/satview_propagation.h>
@@ -180,6 +181,38 @@ TEST_CASE("SatView propagation matches Vallado SGP4 verification case 00005", "[
     REQUIRE(after_six_hours.states.size() == 1);
     check_vec3(after_six_hours.states[0].teme_position_km, -7154.03120202, -3783.17682504, -3536.19412294, 0.001);
     check_vec3(after_six_hours.states[0].teme_velocity_km_per_s, 4.741887409, -4.151817765, -2.093935425, 0.000001);
+}
+
+TEST_CASE("SatView propagation compiles directly supplied out-of-domain identifiers safely",
+    "[satview][propagation][catalog-id]")
+{
+    // Direct model compilation bypasses parser validation; the SGP4 satnum
+    // derivation must stay well defined for every int64 (INT64_MIN used to
+    // reach std::llabs). Valid identifiers keep their identity.
+    const auto parsed = parse_celestrak_gp_json(kVallado00005Json, "vallado", "AIAA-2006-6753");
+    REQUIRE(parsed);
+    REQUIRE(parsed.catalog.objects.size() == 1);
+    const double epoch_seconds = *parse_celestrak_epoch_utc("2000-06-27T18:50:19.733568");
+
+    for (const std::int64_t id : { std::numeric_limits<std::int64_t>::min(), std::int64_t{ -1 },
+             std::int64_t{ 0 }, std::int64_t{ 5 }, std::int64_t{ 25544 },
+             std::numeric_limits<std::int64_t>::max() })
+    {
+        CAPTURE(id);
+        draxul::satview::SatelliteCatalog catalog;
+        catalog.objects.push_back(parsed.catalog.objects.front());
+        catalog.objects.front().norad_catalog_id = id;
+
+        auto build = build_satellite_propagation_model(catalog);
+        REQUIRE(build);
+        REQUIRE(build.compiled_records == 1);
+        REQUIRE(build.model.entries().size() == 1);
+        CHECK(build.model.entries().front().norad_catalog_id == id);
+        const auto at_epoch = propagate_satellites(build.model, epoch_seconds);
+        REQUIRE(at_epoch);
+        REQUIRE(at_epoch.states.size() == 1);
+        check_vec3(at_epoch.states[0].teme_position_km, 7022.46529266, -1400.08296755, 0.03995155, 0.001);
+    }
 }
 
 TEST_CASE("SatView propagation generates configurable track samples", "[satview][propagation]")

@@ -592,15 +592,32 @@ std::optional<int> int_field(const JsonObject& object, const char* key)
     return static_cast<int>(std::llround(*value));
 }
 
-std::optional<std::int64_t> int64_field(const JsonObject& object, const char* key)
+// NORAD catalog identifiers are positive integers. Validate the exact domain
+// before converting: decimal strings must parse exactly as a positive int64,
+// and JSON numbers (doubles) must be integral and below 2^53, where every
+// integer is exact. This excludes zero, negatives, INT64_MIN, fractions, and
+// the rounded 2^63 endpoint whose conversion to int64 is undefined.
+std::optional<std::int64_t> catalog_id_field(const JsonObject& object, const char* key)
 {
-    const auto value = number_field(object, key);
-    if (!value.has_value())
+    constexpr double kExactIntegerLimit = 9007199254740992.0; // 2^53
+    const auto it = object.find(key);
+    if (it == object.end())
         return std::nullopt;
-    if (*value < static_cast<double>(std::numeric_limits<std::int64_t>::min())
-        || *value > static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+    if (it->second.type == JsonValue::Type::String)
+    {
+        const std::string& text = it->second.string_value;
+        std::int64_t parsed = 0;
+        const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), parsed);
+        if (ec != std::errc{} || end != text.data() + text.size() || parsed <= 0)
+            return std::nullopt;
+        return parsed;
+    }
+    if (it->second.type != JsonValue::Type::Number)
         return std::nullopt;
-    return static_cast<std::int64_t>(std::llround(*value));
+    const double value = it->second.number_value;
+    if (!(value >= 1.0) || !(value < kExactIntegerLimit) || std::trunc(value) != value)
+        return std::nullopt;
+    return static_cast<std::int64_t>(value);
 }
 
 bool require_number(const JsonObject& object, const char* key, double& out)
@@ -690,7 +707,7 @@ SatelliteObjectKind derive_object_kind(std::string_view object_type, std::string
 std::optional<SatelliteRecord> make_record(const JsonObject& object)
 {
     SatelliteRecord record;
-    const auto catalog_id = int64_field(object, "NORAD_CAT_ID");
+    const auto catalog_id = catalog_id_field(object, "NORAD_CAT_ID");
     const auto epoch = string_field(object, "EPOCH");
     if (!catalog_id.has_value() || !epoch.has_value())
         return std::nullopt;

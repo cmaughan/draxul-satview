@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -261,7 +262,12 @@ std::string sgp4_satellite_number(std::int64_t catalog_id)
 {
     // Vallado's 2020 C++ struct still stores satnum in a five-character field.
     // The identifier is not used in the propagation math, so keep it bounded.
-    const auto bounded = static_cast<long long>(std::llabs(catalog_id) % 100000);
+    // Direct callers may pass unvalidated identifiers: take the magnitude in
+    // unsigned arithmetic so INT64_MIN cannot overflow (std::llabs would).
+    const std::uint64_t magnitude = catalog_id < 0
+        ? std::uint64_t{ 0 } - static_cast<std::uint64_t>(catalog_id)
+        : static_cast<std::uint64_t>(catalog_id);
+    const auto bounded = static_cast<long long>(magnitude % 100000u);
     char buffer[6]{};
     std::snprintf(buffer, sizeof(buffer), "%05lld", bounded);
     return std::string(buffer);
