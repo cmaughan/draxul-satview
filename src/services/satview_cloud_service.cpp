@@ -3,23 +3,15 @@
 #include <draxul/log.h>
 #include <draxul/perf_timing.h>
 
+#include "satview_cache_publication.h"
+
 #include <algorithm>
-#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <system_error>
 #include <utility>
-
-#if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#else
-#include <unistd.h>
-#endif
 
 namespace draxul::satview
 {
@@ -44,57 +36,6 @@ std::optional<std::string> read_binary_file(const std::filesystem::path& path, s
         return std::nullopt;
     }
     return content;
-}
-
-bool write_binary_atomic(const std::filesystem::path& path, std::string_view content, std::string& error)
-{
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec)
-    {
-        error = "failed to create cloud cache directory: " + ec.message();
-        return false;
-    }
-
-    static std::atomic<std::uint64_t> next_temporary_id{ 0 };
-#if defined(_WIN32)
-    const auto process_id = GetCurrentProcessId();
-#else
-    const auto process_id = getpid();
-#endif
-    const std::filesystem::path temporary = path.string() + ".tmp."
-        + std::to_string(process_id) + "."
-        + std::to_string(next_temporary_id.fetch_add(1, std::memory_order_relaxed));
-    {
-        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
-        if (!out.is_open())
-        {
-            error = "failed to open " + temporary.string();
-            return false;
-        }
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out.good())
-        {
-            error = "failed to write " + temporary.string();
-            return false;
-        }
-    }
-
-#if defined(_WIN32)
-    if (!MoveFileExW(temporary.c_str(), path.c_str(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        ec = std::error_code(static_cast<int>(GetLastError()), std::system_category());
-#else
-    std::filesystem::rename(temporary, path, ec);
-#endif
-    if (ec)
-    {
-        std::error_code cleanup_error;
-        std::filesystem::remove(temporary, cleanup_error);
-        error = "failed to replace cloud cache: " + ec.message();
-        return false;
-    }
-    return true;
 }
 
 SatViewCloudService::Clock::time_point file_time_to_system_time(std::filesystem::file_time_type file_time)
@@ -310,7 +251,7 @@ void SatViewCloudService::start_refresh(bool force_fetch)
                 result.error = fetch_error.empty()
                     ? "downloaded cloud image is invalid" : std::move(fetch_error);
             }
-            else if (write_binary_atomic(cache_path, bytes, cache_error))
+            else if (detail::write_cache_text_atomically(cache_path, bytes, cache_error))
             {
                 result.success = true;
                 result.data_source = DataSource::Live;

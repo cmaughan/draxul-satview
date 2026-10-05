@@ -3,6 +3,7 @@
 #include "satview_cache_publication.h"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <draxul/satview/satview_catalog_service.h>
 #include <draxul/satview/satview_texture_assets.h>
 
@@ -159,6 +160,57 @@ TEST_CASE("SatView cache publication preserves the destination when replacement 
     CHECK_FALSE(std::filesystem::exists(attempted_temporary));
     CHECK(read_file(destination) == "last valid cache");
     CHECK(error.find("failed to replace") != std::string::npos);
+}
+
+TEST_CASE("SatView cache publication rejects a temporary whose final close fails",
+    "[satview][catalog][service][cache]")
+{
+    // Catalog payloads/metadata and the cloud image cache share this writer.
+    const std::string destination_name = GENERATE(
+        std::string("celestrak_satcat.csv"),
+        std::string("celestrak_active_gp.meta"),
+        std::string("live_clouds_8192x4096.jpg"));
+    CAPTURE(destination_name);
+    draxul::tests::TempDir temp("satview-cache-close-failure");
+    const auto destination = temp.path / destination_name;
+    write_file(destination, "last valid cache");
+
+    int close_calls = 0;
+    int replace_calls = 0;
+    draxul::satview::detail::CacheFileOperations operations;
+    operations.close_temporary = [&](std::ofstream& out) {
+        // The real flush/close runs, then reports the deferred write failure
+        // a full disk or network filesystem would surface only at close.
+        ++close_calls;
+        draxul::satview::detail::close_cache_temporary(out);
+        return false;
+    };
+    operations.replace_file = [&](const std::filesystem::path&, const std::filesystem::path&) {
+        ++replace_calls;
+        return std::error_code{};
+    };
+
+    std::string error;
+    const bool published = draxul::satview::detail::write_cache_text_atomically(
+        destination, std::string(64 * 1024, 'x'), error, operations);
+
+    CHECK_FALSE(published);
+    CHECK(close_calls == 1);
+    CHECK(replace_calls == 0);
+    CHECK(read_file(destination) == "last valid cache");
+    CHECK(error.find("failed to finish writing") != std::string::npos);
+    std::size_t temporary_files = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(temp.path))
+    {
+        if (entry.path().filename().string().starts_with(destination_name + ".tmp."))
+            ++temporary_files;
+    }
+    CHECK(temporary_files == 0);
+
+    // The production close stage publishes the complete payload.
+    const std::string replacement(64 * 1024 + 17, 'y');
+    REQUIRE(draxul::satview::detail::write_cache_text_atomically(destination, replacement, error));
+    CHECK(read_file(destination) == replacement);
 }
 
 #ifdef __APPLE__
