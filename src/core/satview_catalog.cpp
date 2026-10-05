@@ -687,11 +687,6 @@ std::optional<SatelliteRecord> make_record(const JsonObject& object)
     return record;
 }
 
-std::filesystem::path resolve_satview_catalog_path(const std::filesystem::path& relative_path)
-{
-    return resolve_satview_asset_path(relative_path);
-}
-
 std::optional<std::string> read_text_file(const std::filesystem::path& path, std::string& error)
 {
     std::ifstream file(path, std::ios::binary);
@@ -1323,8 +1318,14 @@ std::size_t apply_sampled_ephemeris_csv(
 
 std::size_t load_bundled_sampled_ephemeris(SatelliteCatalog& catalog, std::string* error)
 {
+    return load_bundled_sampled_ephemeris(resolve_satview_asset_path({}), catalog, error);
+}
+
+std::size_t load_bundled_sampled_ephemeris(
+    const std::filesystem::path& asset_root, SatelliteCatalog& catalog, std::string* error)
+{
     std::string read_error;
-    const auto path = resolve_satview_catalog_path("catalog/lunar_ephemeris.csv");
+    const auto path = asset_root / "catalog/lunar_ephemeris.csv";
     const auto content = read_text_file(path, read_error);
     if (!content.has_value())
     {
@@ -1393,8 +1394,14 @@ std::size_t apply_lunar_disposition_csv(
 
 std::size_t load_bundled_lunar_dispositions(SatelliteCatalog& catalog, std::string* error)
 {
+    return load_bundled_lunar_dispositions(resolve_satview_asset_path({}), catalog, error);
+}
+
+std::size_t load_bundled_lunar_dispositions(
+    const std::filesystem::path& asset_root, SatelliteCatalog& catalog, std::string* error)
+{
     std::string read_error;
-    const auto path = resolve_satview_catalog_path("catalog/lunar_dispositions.csv");
+    const auto path = asset_root / "catalog/lunar_dispositions.csv";
     const auto content = read_text_file(path, read_error);
     if (!content.has_value())
     {
@@ -1475,8 +1482,13 @@ SatelliteCatalog merge_satellite_catalogs(
 
 CatalogParseResult load_sample_satellite_catalog()
 {
+    return load_sample_satellite_catalog(resolve_satview_asset_path({}));
+}
+
+CatalogParseResult load_sample_satellite_catalog(const std::filesystem::path& asset_root)
+{
     PERF_MEASURE();
-    const auto path = resolve_satview_catalog_path("catalog/sample_gp.json");
+    const auto path = asset_root / "catalog/sample_gp.json";
     std::string error;
     auto content = read_text_file(path, error);
     if (!content.has_value())

@@ -5,6 +5,7 @@
 #include <draxul/perf_timing.h>
 
 #include <limits>
+#include <mutex>
 
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
@@ -16,10 +17,26 @@ namespace draxul::satview
 namespace
 {
 
-std::filesystem::path& asset_root()
+// Process-wide default root. Panes are created on the main thread while
+// catalog workers may still be resolving bundled files, so every access copies
+// the path under this lock; services capture an immutable copy at start().
+struct DefaultAssetRoot
 {
-    static std::filesystem::path root;
-    return root;
+    std::mutex mutex;
+    std::filesystem::path root;
+};
+
+DefaultAssetRoot& default_asset_root()
+{
+    static DefaultAssetRoot state;
+    return state;
+}
+
+std::filesystem::path default_asset_root_snapshot()
+{
+    DefaultAssetRoot& state = default_asset_root();
+    std::lock_guard lock(state.mutex);
+    return state.root;
 }
 
 LoadedTextureImage load_rgba8_image_impl(const std::filesystem::path& path)
@@ -85,15 +102,18 @@ LoadedTextureImage decode_rgba8_image(std::string_view bytes)
 std::filesystem::path resolve_satview_asset_path(const std::filesystem::path& relative_path)
 {
     PERF_MEASURE();
-    if (!asset_root().empty())
-        return asset_root() / relative_path;
+    const std::filesystem::path root = default_asset_root_snapshot();
+    if (!root.empty())
+        return root / relative_path;
 
     return relative_path;
 }
 
 void set_satview_asset_root(std::filesystem::path root)
 {
-    asset_root() = std::move(root);
+    DefaultAssetRoot& state = default_asset_root();
+    std::lock_guard lock(state.mutex);
+    state.root = std::move(root);
 }
 
 EarthTextureImages load_earth_texture_images()

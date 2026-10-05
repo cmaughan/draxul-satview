@@ -44,6 +44,11 @@ public:
         std::chrono::seconds satcat_refresh_interval = std::chrono::hours(12);
         std::string satcat_url;
         std::filesystem::path cache_directory;
+        // Root of the bundled SatView assets this service reads (lunar
+        // dispositions, sampled ephemerides, offline sample). start() resolves
+        // an empty root once on the calling thread; workers only ever read
+        // their own immutable copy, never the process-wide default root.
+        std::filesystem::path asset_root;
         FetchFunction fetch;
         std::shared_ptr<http::IHttpClient> http_client;
     };

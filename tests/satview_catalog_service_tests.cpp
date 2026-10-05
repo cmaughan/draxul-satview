@@ -4,7 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <draxul/satview/satview_catalog_service.h>
+#include <draxul/satview/satview_texture_assets.h>
 
+#include <algorithm>
 #include <chrono>
 #include <atomic>
 #include <filesystem>
@@ -534,4 +536,87 @@ TEST_CASE("SatView concurrent catalog publishers leave a coherent reusable cache
     CHECK(offline_fetches == 0);
     CHECK(offline.status().data_source == SatViewCatalogService::DataSource::Cache);
     CHECK(offline.status().object_count == 1);
+}
+
+TEST_CASE("SatView catalog workers keep their own asset root while another pane resets the default",
+    "[satview][catalog][service][assets][thread]")
+{
+    // Restores the shared default even if an assertion fails part-way through.
+    struct RestoreDefaultAssetRoot
+    {
+        ~RestoreDefaultAssetRoot()
+        {
+            draxul::satview::set_satview_asset_root(
+                std::filesystem::path(DRAXUL_SATVIEW_TEST_ASSET_ROOT));
+        }
+    } restore;
+
+    draxul::tests::TempDir temp("satview-catalog-asset-root");
+    const auto service_assets = temp.path / "service-assets";
+    std::filesystem::create_directories(service_assets / "catalog");
+    std::string sample_json = kOneObjectJson;
+    sample_json.replace(sample_json.find("910001"), 6, "940001");
+    write_file(service_assets / "catalog/sample_gp.json", sample_json);
+    write_file(service_assets / "catalog/lunar_dispositions.csv",
+        "NORAD_CAT_ID,DISPOSITION\n930002,SURFACE\n");
+    const auto cache_dir = temp.path / "cache";
+    std::filesystem::create_directories(cache_dir);
+
+    // The default root starts out (and is later reset) somewhere with no
+    // assets, so any worker read through the shared default is observable.
+    const auto missing_assets = temp.path / "missing-assets";
+    draxul::satview::set_satview_asset_root(missing_assets);
+
+    std::atomic<bool> worker_fetching{ false };
+    std::atomic<bool> release_worker{ false };
+    auto config = config_for(cache_dir, [&](std::string_view url, std::string& error) {
+        error.clear();
+        if (url.find("satcat.csv") != std::string_view::npos)
+        {
+            return std::string(
+                "OBJECT_NAME,NORAD_CAT_ID,OBJECT_TYPE,DECAY_DATE,ORBIT_CENTER,ORBIT_TYPE\n"
+                "LUNAR KEEP,930001,PAY,,MO,ORB\n"
+                "LUNAR LANDED,930002,PAY,,MO,ORB\n");
+        }
+        worker_fetching.store(true, std::memory_order_release);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!release_worker.load(std::memory_order_acquire)
+            && std::chrono::steady_clock::now() < deadline)
+            std::this_thread::yield();
+        return std::string(kOneObjectJson);
+    });
+    config.asset_root = service_assets;
+
+    SatViewCatalogService service;
+    service.start(std::move(config));
+
+    // Startup fallback resolved the offline sample from the service root.
+    const auto contains = [](const draxul::satview::SatelliteCatalog& catalog, std::int64_t id) {
+        return std::ranges::any_of(catalog.objects,
+            [id](const auto& record) { return record.norad_catalog_id == id; });
+    };
+    CHECK(contains(service.catalog(), 940001));
+
+    // Another pane opening rewrites the shared default while the worker runs.
+    REQUIRE(draxul::tests::pump_until([] {},
+        [&] { return worker_fetching.load(std::memory_order_acquire); },
+        std::chrono::seconds(5), std::chrono::milliseconds(1)));
+    std::atomic<bool> stop_mutator{ false };
+    std::thread pane_creator([&] {
+        int i = 0;
+        while (!stop_mutator.load(std::memory_order_acquire))
+            draxul::satview::set_satview_asset_root(
+                missing_assets / std::to_string(i++ % 4));
+    });
+    release_worker.store(true, std::memory_order_release);
+    const bool idle = wait_for_idle(service);
+    stop_mutator.store(true, std::memory_order_release);
+    pane_creator.join();
+    REQUIRE(idle);
+
+    const auto catalog = service.catalog();
+    CHECK(contains(catalog, 910001));
+    CHECK(contains(catalog, 930001));
+    CHECK_FALSE(contains(catalog, 930002));
+    CHECK(catalog.excluded_records >= 1);
 }

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -182,6 +183,11 @@ struct CatalogParseResult
 [[nodiscard]] std::size_t load_bundled_sampled_ephemeris(
     SatelliteCatalog& catalog,
     std::string* error = nullptr);
+// Thread-safe form for background workers: reads only the supplied asset root.
+[[nodiscard]] std::size_t load_bundled_sampled_ephemeris(
+    const std::filesystem::path& asset_root,
+    SatelliteCatalog& catalog,
+    std::string* error = nullptr);
 
 // Removes records which a curated source confirms are no longer orbiting the
 // Moon (for example, landed or impacted objects still lacking a SATCAT decay
@@ -194,11 +200,17 @@ struct CatalogParseResult
 [[nodiscard]] std::size_t load_bundled_lunar_dispositions(
     SatelliteCatalog& catalog,
     std::string* error = nullptr);
+[[nodiscard]] std::size_t load_bundled_lunar_dispositions(
+    const std::filesystem::path& asset_root,
+    SatelliteCatalog& catalog,
+    std::string* error = nullptr);
 
 [[nodiscard]] SatelliteCatalog merge_satellite_catalogs(
     const SatelliteCatalog& active_gp,
     const SatelliteCatalog& satcat);
 
 [[nodiscard]] CatalogParseResult load_sample_satellite_catalog();
+[[nodiscard]] CatalogParseResult load_sample_satellite_catalog(
+    const std::filesystem::path& asset_root);
 
 } // namespace draxul::satview

@@ -650,6 +650,7 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
             ? test_hooks_.catalog_fetch
             : SatViewCatalogService::FetchFunction(offline_stub);
         catalog_config.cache_directory = test_hooks_.cache_directory;
+        catalog_config.asset_root = asset_root_;
         catalog_service_.start(std::move(catalog_config));
 
         SatViewCloudService::Config cloud_config;
@@ -666,6 +667,7 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
             ? SatViewCatalogService::default_cache_directory() : cache_root_;
         SatViewCatalogService::Config catalog_config;
         catalog_config.cache_directory = cloud_config.cache_directory;
+        catalog_config.asset_root = asset_root_;
         catalog_service_.start(std::move(catalog_config));
         cloud_service_->start(std::move(cloud_config));
     }
