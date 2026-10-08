@@ -283,3 +283,34 @@ TEST_CASE("SatView generated body tracks stay device free and paired", "[satview
     CHECK(earth_rings.empty());
     CHECK(satview_solar_system_scene_radius(SatViewCameraPov::Sun) > 1.0f);
 }
+
+TEST_CASE("SatView scene composer marker scale enlarges only globe and map markers", "[satview][scene][composer][render-fixture]")
+{
+    const std::vector states = { state_at(1, { 1.08, 0.0, 0.0 }) };
+    SatViewFilterState filter;
+    SatViewMarkerComposeRequest request;
+    request.states = states;
+    request.filter = &filter;
+
+    const auto unscaled = compose_satview_markers(request);
+    request.marker_scale = 4.0f;
+    const auto scaled = compose_satview_markers(request);
+    REQUIRE(unscaled.markers.size() == 1);
+    REQUIRE(scaled.markers.size() == 1);
+    CHECK(std::abs(scaled.markers.front().position0_size.w
+              - 4.0f * unscaled.markers.front().position0_size.w)
+        < 1.0e-6f);
+    // The scale never moves a marker.
+    CHECK(scaled.markers.front().position0_size.x == unscaled.markers.front().position0_size.x);
+    CHECK(scaled.markers.front().position0_size.y == unscaled.markers.front().position0_size.y);
+    CHECK(scaled.markers.front().position0_size.z == unscaled.markers.front().position0_size.z);
+
+    // Ground markers keep their own observer-relative size and scale.
+    request.ground_observer_render_position = glm::dvec3(1.0, 0.0, 0.0);
+    const auto ground_scaled = compose_satview_markers(request);
+    request.marker_scale = 1.0f;
+    const auto ground_unscaled = compose_satview_markers(request);
+    REQUIRE(ground_scaled.markers.size() == 1);
+    REQUIRE(ground_unscaled.markers.size() == 1);
+    CHECK(ground_scaled.markers.front().position0_size.w == ground_unscaled.markers.front().position0_size.w);
+}

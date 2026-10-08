@@ -27,6 +27,9 @@ struct SatViewMarkerComposeRequest
     std::optional<glm::dvec3> ground_observer_render_position;
     bool ground_horizon_occlusion = false;
     float ground_marker_scale = 0.1f;
+    // Multiplies the globe/map marker size. Production always uses 1; only
+    // the render-test fixture enlarges markers so a reference image shows them.
+    float marker_scale = 1.0f;
 };
 
 struct SatViewMarkerComposeResult

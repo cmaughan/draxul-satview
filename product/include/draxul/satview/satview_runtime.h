@@ -64,6 +64,38 @@ public:
     virtual void finish() = 0;
 };
 
+// Render-regression fixture (kanban 17). TEST-ONLY: the SatView plugin
+// installs this solely from the `render_test_fixture` launch key used by the
+// controlled `tests/render/satview-plugin*.toml` scenarios; it is not a
+// SatView preference, is never read from or written to config.toml or pane
+// state, and has no UI. It reuses the offline test hooks (fixed clock and
+// fake catalog/cloud transports over a private cache directory) through the
+// real runtime/plugin rendering path, starts the simulation paused at exactly
+// `unix_seconds`, and pins the camera. render_test_fixture_ready() stays false
+// until a drawn frame has uploaded markers and tracks for the fixture catalog,
+// so a capture gated on it can never pass without satellites on screen.
+struct SatViewRenderTestFixture
+{
+    double unix_seconds = 0.0;
+    // CelesTrak GP JSON and SATCAT CSV payloads served by the fake fetch.
+    std::string gp_json;
+    std::string satcat_csv;
+    // Private, initially empty cache directory; never the user's cache.
+    std::filesystem::path cache_directory;
+    // Globe camera: looks at this geographic point (at `unix_seconds`) from
+    // `camera_distance_earth_radii` Earth radii, north up.
+    double camera_longitude_degrees = 0.0;
+    double camera_latitude_degrees = 0.0;
+    float camera_distance_earth_radii = 3.6f;
+    // Map projection centre (longitude, latitude) in degrees.
+    glm::vec2 map_center_degrees{ 0.0f };
+    // Globe/map marker size multiplier so the reference visibly contains
+    // every marker (production markers are a few pixels across).
+    float marker_scale = 1.0f;
+    std::size_t required_markers = 1;
+    std::size_t required_tracks = 0;
+};
+
 class SatViewRuntime
 {
 public:
@@ -106,6 +138,14 @@ public:
     void attach_imgui_host(draxul::IImGuiHost& host);
     void set_imgui_font(const std::string& path, float size_pixels);
 
+    // Render-test-only seam; see SatViewRenderTestFixture. Must be called
+    // before initialize(); returns false once the runtime is running.
+    bool install_render_test_fixture(SatViewRenderTestFixture fixture);
+    [[nodiscard]] bool render_test_fixture_active() const;
+    // True once the latest drawn frame uploaded at least the fixture's
+    // required markers and tracks from the live (fixture) catalog.
+    [[nodiscard]] bool render_test_fixture_ready() const;
+
 private:
     struct ObjectTreeEntry
     {
@@ -143,8 +183,9 @@ private:
     // offline catalog/cloud transports so construct/initialize/pump/draw can run
     // with no GPU, no network, and no system-clock reads. Inert in production —
     // when `active` is false the real clock, HTTP client, and default cache
-    // directory are used unchanged. Installed via SatViewHostTestAccess before
-    // initialize(); it is the sole friend that may reach the private host state.
+    // directory are used unchanged. Installed before initialize() either by
+    // SatViewHostTestAccess (the sole friend that may reach the private host
+    // state) or by install_render_test_fixture() for GPU render fixtures.
     friend class SatViewHostTestAccess;
     using TestFetchFunction = std::function<std::string(std::string_view url, std::string& error)>;
     struct TestHooks
@@ -211,7 +252,16 @@ private:
     void center_selected_surface_object(double simulation_seconds);
     void apply_selection(const SatViewSelectionState& selection);
 
+    void apply_render_test_fixture_view();
+    void update_render_test_fixture_readiness(const SatViewSimulationSnapshot* snapshot);
+
     TestHooks test_hooks_;
+    std::optional<SatViewRenderTestFixture> render_test_fixture_;
+    bool render_test_fixture_ready_ = false;
+    std::size_t uploaded_marker_count_ = 0;
+    std::size_t uploaded_track_count_ = 0;
+    std::uint64_t uploaded_track_catalog_generation_ = 0;
+    std::uint64_t uploaded_marker_catalog_generation_ = 0;
     SatViewRuntimeCallbacks* callbacks_ = nullptr;
     std::filesystem::path asset_root_;
     std::filesystem::path cache_root_;

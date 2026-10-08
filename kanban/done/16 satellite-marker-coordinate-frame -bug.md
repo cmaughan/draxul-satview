@@ -8,7 +8,7 @@
 - [x] Restore `teme_position_to_render_earth_radii()` for both marker interpolation endpoints in `compose_satview_markers()`.
 - [x] Add explicit cardinal-axis, north-pole, interpolation and marker/track alignment regressions; correct existing composer fixtures that assume raw orbital axes are render coordinates.
 - [x] Verify ground-horizon visibility and marker sizing use the converted positions and agree with picking.
-- [x] Run the SatView aggregate and same-cache smoke, inspect Vulkan globe/map output, inspect Metal consumption, and confirm Release startup. Deterministic cardinal positions and marker/track alignment are asserted by the CPU contract tests; current GPU capture configuration does not expose fixed simulation/catalog injection. Automated GPU fixture work is explicitly tracked in `../pending/17 satellite-render-regression-fixture -test.md`.
+- [x] Run the SatView aggregate and same-cache smoke, inspect Vulkan globe/map output, inspect Metal consumption, and confirm Release startup. Deterministic cardinal positions and marker/track alignment are asserted by the CPU contract tests; current GPU capture configuration does not expose fixed simulation/catalog injection. Automated GPU fixture work is explicitly tracked in `17 satellite-render-regression-fixture -test.md` (done).
 
 ## Diagnosis — 2026-10-08
 
@@ -100,7 +100,7 @@
   Its stderr also contains existing Vulkan/loader diagnostics; this CPU-only
   repair does not claim a globally validation-clean renderer. The stale reference
   and missing controlled GPU fixture are owned by
-  `../pending/17 satellite-render-regression-fixture -test.md`; paused publication
+  `17 satellite-render-regression-fixture -test.md` (done); paused publication
   remains owned by `../pending/11 paused-controls-completion-ticks -bug.md`.
 - Metal's `satview_marker_vertex` interpolates the same scene endpoints directly,
   so the shared CPU correction applies without backend changes. No macOS runtime

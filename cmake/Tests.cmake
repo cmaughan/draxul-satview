@@ -30,7 +30,8 @@ target_link_libraries(draxul-test-satview PRIVATE
     draxul-renderer)
 target_compile_definitions(draxul-test-satview PRIVATE
     DRAXUL_ENABLE_SATVIEW
-    "DRAXUL_SATVIEW_TEST_ASSET_ROOT=\"${_satview_root}/assets\"")
+    "DRAXUL_SATVIEW_TEST_ASSET_ROOT=\"${_satview_root}/assets\""
+    "DRAXUL_SATVIEW_TEST_FIXTURE_ROOT=\"${_satview_root}/tests/fixtures\"")
 if(APPLE)
     target_compile_definitions(draxul-test-satview PRIVATE
         "DRAXUL_SATVIEW_TEST_METALLIB=\"${_satview_test_metallib}\"")

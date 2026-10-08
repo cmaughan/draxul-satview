@@ -32,10 +32,17 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <optional>
+#include <random>
 #include <string>
 #include <string_view>
+#include <system_error>
 
 namespace
 {
@@ -74,6 +81,21 @@ struct SatViewPluginInstance
     {
     }
 
+    ~SatViewPluginInstance()
+    {
+        // The runtime joins its catalog/cloud workers before the private
+        // render-fixture cache they write into is removed.
+        runtime.reset();
+        if (!render_fixture_cache_directory.empty())
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(render_fixture_cache_directory, ignored);
+        }
+    }
+
+    SatViewPluginInstance(const SatViewPluginInstance&) = delete;
+    SatViewPluginInstance& operator=(const SatViewPluginInstance&) = delete;
+
     const DraxulPluginHostApiV2* host = nullptr;
     draxul::plugin_support::HostServices services;
     std::filesystem::path directory;
@@ -94,11 +116,146 @@ struct SatViewPluginInstance
     RuntimeCallbacks runtime_callbacks;
     std::unique_ptr<draxul::plugin_support::GpuImGuiHost> imgui_overlay;
     draxul::plugin_support::UiStyleClient ui_style;
+    // Render-test-only fixture state (see parse_render_test_fixture).
+    bool render_fixture = false;
+    std::filesystem::path render_fixture_cache_directory;
     std::unique_ptr<draxul::satview::SatViewRuntime> runtime;
 #if !defined(__APPLE__)
     VmaAllocator allocator = VK_NULL_HANDLE;
 #endif
 };
+
+// --- Render-regression fixture (kanban 17) --------------------------------
+// TEST-ONLY. The `render_test_fixture` launch key exists solely for the
+// controlled tests/render/satview-plugin*.toml scenarios. It is not a
+// SatView preference: it is never persisted, has no UI, and is ignored by
+// pane-state/config.toml handling. It names offline CelesTrak GP/SATCAT
+// payload files, a fixed simulation epoch, and a camera/map view; the runtime
+// serves the payloads through its existing offline test transports over a
+// private temporary cache, starts paused at the epoch, and reports content
+// ready only once the fixture markers and tracks are on screen.
+constexpr std::uintmax_t kMaxRenderFixturePayloadBytes = 4u * 1024u * 1024u;
+
+std::filesystem::path utf8_path(const std::string& value)
+{
+    return std::filesystem::path(std::u8string(value.begin(), value.end()));
+}
+
+bool read_render_fixture_payload(const std::filesystem::path& path,
+    std::string& payload, std::string& error)
+{
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec || size == 0 || size > kMaxRenderFixturePayloadBytes)
+    {
+        error = "render_test_fixture payload is missing, empty or too large: "
+            + path.generic_string();
+        return false;
+    }
+    std::ifstream stream(path, std::ios::binary);
+    payload.assign(std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>());
+    if (!stream.good() && !stream.eof())
+    {
+        error = "render_test_fixture payload could not be read: "
+            + path.generic_string();
+        return false;
+    }
+    return true;
+}
+
+std::optional<double> finite_number(const nlohmann::json& object,
+    const char* key, double minimum, double maximum)
+{
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_number())
+        return std::nullopt;
+    const double value = it->get<double>();
+    if (!std::isfinite(value) || value < minimum || value > maximum)
+        return std::nullopt;
+    return value;
+}
+
+std::optional<draxul::satview::SatViewRenderTestFixture>
+parse_render_test_fixture(const nlohmann::json& value, std::string& error)
+{
+    draxul::satview::SatViewRenderTestFixture fixture;
+    if (!value.is_object())
+    {
+        error = "render_test_fixture must be an object";
+        return std::nullopt;
+    }
+    const auto unix_seconds = finite_number(value, "unix_seconds", 0.0, 4.0e9);
+    const auto longitude = finite_number(value, "camera_longitude_degrees", -180.0, 180.0);
+    const auto latitude = finite_number(value, "camera_latitude_degrees", -85.0, 85.0);
+    const auto distance = finite_number(value, "camera_distance_earth_radii", 1.5, 20.0);
+    const auto markers = finite_number(value, "required_markers", 1.0, 100000.0);
+    const auto tracks = finite_number(value, "required_tracks", 0.0, 100000.0);
+    const auto marker_scale = finite_number(value, "marker_scale", 1.0, 8.0);
+    const auto gp_path = value.find("gp_json_path");
+    const auto satcat_path = value.find("satcat_csv_path");
+    const auto map_center = value.find("map_center_degrees");
+    if (!unix_seconds || !longitude || !latitude || !distance || !markers
+        || !tracks || !marker_scale || gp_path == value.end() || !gp_path->is_string()
+        || satcat_path == value.end() || !satcat_path->is_string()
+        || map_center == value.end() || !map_center->is_array()
+        || map_center->size() != 2 || !(*map_center)[0].is_number()
+        || !(*map_center)[1].is_number())
+    {
+        error = "render_test_fixture requires unix_seconds, gp_json_path, "
+                "satcat_csv_path, camera_longitude_degrees, "
+                "camera_latitude_degrees, camera_distance_earth_radii, "
+                "map_center_degrees, marker_scale, required_markers and "
+                "required_tracks";
+        return std::nullopt;
+    }
+    const double map_longitude = (*map_center)[0].get<double>();
+    const double map_latitude = (*map_center)[1].get<double>();
+    if (!std::isfinite(map_longitude) || !std::isfinite(map_latitude)
+        || std::abs(map_longitude) > 180.0 || std::abs(map_latitude) > 89.0)
+    {
+        error = "render_test_fixture map_center_degrees is out of range";
+        return std::nullopt;
+    }
+    if (!read_render_fixture_payload(
+            utf8_path(gp_path->get<std::string>()), fixture.gp_json, error)
+        || !read_render_fixture_payload(
+            utf8_path(satcat_path->get<std::string>()), fixture.satcat_csv, error))
+        return std::nullopt;
+    fixture.unix_seconds = *unix_seconds;
+    fixture.camera_longitude_degrees = *longitude;
+    fixture.camera_latitude_degrees = *latitude;
+    fixture.camera_distance_earth_radii = static_cast<float>(*distance);
+    fixture.map_center_degrees = { static_cast<float>(map_longitude),
+        static_cast<float>(map_latitude) };
+    fixture.marker_scale = static_cast<float>(*marker_scale);
+    fixture.required_markers = static_cast<std::size_t>(*markers);
+    fixture.required_tracks = static_cast<std::size_t>(*tracks);
+    return fixture;
+}
+
+std::filesystem::path create_render_fixture_cache_directory(std::string& error)
+{
+    std::error_code ec;
+    const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+    if (ec)
+    {
+        error = "render_test_fixture has no temporary directory";
+        return {};
+    }
+    std::random_device random;
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        const std::filesystem::path candidate = base
+            / ("draxul-satview-render-fixture-" + std::to_string(ticks) + "-"
+                + std::to_string(random()));
+        if (std::filesystem::create_directory(candidate, ec) && !ec)
+            return candidate;
+    }
+    error = "render_test_fixture could not create a private cache directory";
+    return {};
+}
 
 void synchronize_ui_style(SatViewPluginInstance& instance)
 {
@@ -171,6 +328,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         delete instance;
         return nullptr;
     }
+    std::optional<draxul::satview::SatViewRenderTestFixture> render_fixture;
     try
     {
         instance->speed = config->value(
@@ -179,6 +337,30 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
         instance->initial_paused = config->value("paused", false);
         instance->remember_state = config->value("remember_state", true);
         instance->saved_config_toml = config->value("satview_config_toml", std::string{});
+        if (const auto fixture = config->find("render_test_fixture");
+            fixture != config->end())
+        {
+            std::string error;
+            render_fixture = parse_render_test_fixture(*fixture, error);
+            if (render_fixture)
+                render_fixture->cache_directory
+                    = create_render_fixture_cache_directory(error);
+            if (!render_fixture || render_fixture->cache_directory.empty())
+            {
+                instance->services.log(DRAXUL_PLUGIN_LOG_ERROR,
+                    "SatView: " + error);
+                delete instance;
+                return nullptr;
+            }
+            // A fixture is paused at its epoch, never remembers pane state,
+            // and hides the control panels (their live timings and cache ages
+            // are not part of the rendering contract).
+            instance->render_fixture = true;
+            instance->render_fixture_cache_directory
+                = render_fixture->cache_directory;
+            instance->initial_paused = true;
+            instance->remember_state = false;
+        }
     }
     catch (...)
     {
@@ -196,7 +378,7 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
     instance->runtime = std::make_unique<draxul::satview::SatViewRuntime>();
     draxul::PluginRuntimeContext context;
     context.launch_options.show_ui_panels
-        = instance->imgui_overlay != nullptr;
+        = instance->imgui_overlay != nullptr && !instance->render_fixture;
     context.initial_viewport.pixel_pos = {
         info->initial_viewport.x, info->initial_viewport.y };
     context.initial_viewport.pixel_size = {
@@ -204,6 +386,12 @@ void* create_instance(const DraxulPluginCreateInfoV2* info)
     context.initial_viewport.pixel_scale = info->initial_viewport.pixel_scale;
     const std::filesystem::path cache_root
         = instance->services.path(DRAXUL_PLUGIN_PATH_CACHE);
+    if (render_fixture
+        && !instance->runtime->install_render_test_fixture(std::move(*render_fixture)))
+    {
+        delete instance;
+        return nullptr;
+    }
     if (!instance->runtime->initialize(context,
             instance->runtime_callbacks,
             instance->directory / "assets", cache_root))
@@ -356,6 +544,13 @@ DraxulPluginTickResultV2 tick(void* opaque,
         synchronize_ui_style(*instance);
         instance->runtime->pump();
     }
+    // A paused render fixture keeps pumping until its catalog, snapshot,
+    // markers and tracks are on screen; afterwards it idles like any paused
+    // pane. Production panes never take this branch.
+    if (!instance->quiesced && instance->visible && info->visible
+        && instance->runtime && instance->runtime->render_test_fixture_active()
+        && !instance->runtime->render_test_fixture_ready())
+        return tick_result(true, kFrameDelayNs, true);
     if (instance->quiesced || !instance->visible || !info->visible
         || (instance->runtime && instance->runtime->paused()))
     {
@@ -507,6 +702,12 @@ int32_t get_presentation_state(void* opaque,
         instance->status += " | paths ready";
     if (!instance->storage_warning.empty())
         instance->status += " | " + instance->storage_warning;
+    const bool fixture_pending = instance->runtime
+        && instance->runtime->render_test_fixture_active()
+        && !instance->runtime->render_test_fixture_ready();
+    if (instance->render_fixture)
+        instance->status += fixture_pending
+            ? " | render fixture pending" : " | render fixture ready";
     *state = {};
     state->struct_size = sizeof(*state);
     state->display_name = { "SatView", 7 };
@@ -516,7 +717,7 @@ int32_t get_presentation_state(void* opaque,
     state->background_green = 0.05f;
     state->background_blue = 0.08f;
     state->background_alpha = 1.0f;
-    state->content_ready = instance->quiesced ? 0 : 1;
+    state->content_ready = instance->quiesced || fixture_pending ? 0 : 1;
     state->mouse_cursor = DRAXUL_PLUGIN_CURSOR_POINTER;
     return 1;
 }

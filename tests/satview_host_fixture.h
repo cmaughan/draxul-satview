@@ -17,6 +17,7 @@
 #include <draxul/satview/satview_config.h>
 #include <draxul/satview/satview_runtime.h>
 #include <draxul/satview/satview_scene_pass.h>
+#include "../src/runtime/camera.h"
 #include "../src/runtime/satview_simulation_worker.h"
 
 #ifdef DRAXUL_ENABLE_SATVIEW
@@ -179,6 +180,35 @@ public:
     {
         return host.marker_buffer_dirty_;
     }
+
+    // Render-fixture (kanban 17) observation points: what the last draw
+    // uploaded to the scene pass, and the pinned camera/map view.
+    static std::size_t uploaded_marker_count(const SatViewHost& host)
+    {
+        return host.uploaded_marker_count_;
+    }
+    static std::size_t uploaded_track_count(const SatViewHost& host)
+    {
+        return host.uploaded_track_count_;
+    }
+    static glm::vec3 camera_position(const SatViewHost& host)
+    {
+        return host.camera_->GetPosition();
+    }
+    static glm::vec2 map_center_radians(const SatViewHost& host)
+    {
+        return host.map_center_radians_;
+    }
+    static bool show_ui_panel(const SatViewHost& host)
+    {
+        return host.show_ui_panel_;
+    }
+    static bool catalog_is_live(const SatViewHost& host)
+    {
+        const auto status = host.catalog_service_.status();
+        return status.gp.data_source == SatViewCatalogService::DataSource::Live
+            && status.satcat.data_source == SatViewCatalogService::DataSource::Live;
+    }
 };
 
 // Minimal bundled sample data mirrored from the *_service_tests so the fake
@@ -314,6 +344,30 @@ struct OfflineSatViewHost
 
         const bool ok = host.initialize(context, runtime_callbacks);
         if (ok && attach_imgui)
+            host.attach_imgui_host(renderer);
+        return ok;
+    }
+
+    // Initialize through the public render-test fixture seam (the path the
+    // plugin adapter uses) instead of install_offline_hooks(). The fixture
+    // supplies its own clock, catalog payloads and cache directory.
+    bool initialize_render_fixture(SatViewRenderTestFixture fixture, bool show_ui_panels = false)
+    {
+        if (!host.install_render_test_fixture(std::move(fixture)))
+            return false;
+        PluginRuntimeLaunchOptions launch;
+        launch.show_ui_panels = show_ui_panels;
+        PluginRuntimeViewport viewport;
+        viewport.pixel_size = { 960, 640 };
+        viewport.grid_size = { 1, 1 };
+        PluginRuntimeContext context{
+            .config_document = nullptr,
+            .launch_options = std::move(launch),
+            .initial_viewport = viewport,
+            .display_ppi = 96.0f,
+        };
+        const bool ok = host.initialize(context, runtime_callbacks);
+        if (ok)
             host.attach_imgui_host(renderer);
         return ok;
     }

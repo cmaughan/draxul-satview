@@ -208,7 +208,7 @@ SatViewMarkerComposeResult compose_satview_markers(const SatViewMarkerComposeReq
                   glm::dvec3(position0),
                   *request.ground_observer_render_position)
                 * request.ground_marker_scale
-            : std::clamp(0.006f + range * 0.0022f, 0.008f, 0.026f);
+            : std::clamp(0.006f + range * 0.0022f, 0.008f, 0.026f) * request.marker_scale;
         const float size = selected ? base_size * 2.2f : base_size;
         const float fidelity_alpha = state.solution_kind == OrbitSolutionKind::SatcatSummaryEstimate
             ? 0.55f

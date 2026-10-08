@@ -671,6 +671,10 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
         catalog_service_.start(std::move(catalog_config));
         cloud_service_->start(std::move(cloud_config));
     }
+    // A render fixture starts the simulation worker already paused so its
+    // clock never advances past the fixture epoch before the first snapshot.
+    if (render_test_fixture_)
+        paused_ = true;
     simulated_seconds_ = now_unix_seconds();
     last_draw_simulation_seconds_ = simulated_seconds_;
     const glm::vec3 sun = glm::vec3(solar_direction_render(simulated_seconds_));
@@ -684,6 +688,8 @@ bool SatViewRuntime::initialize(const PluginRuntimeContext& context,
     camera_->SetPositionAndFocalPoint(
         target + camera_position_from_yaw_pitch(std::atan2(sun.x, sun.z) + 0.65f, 0.25f, kCameraDefaultDistance * target_radius),
         target);
+    if (render_test_fixture_)
+        apply_render_test_fixture_view();
     last_pump_time_ = std::chrono::steady_clock::now();
     last_activity_time_ = last_pump_time_;
     next_frame_time_ = last_pump_time_ + kFrameTick;
@@ -1274,6 +1280,10 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
                     track_vertices.end(), moon_track.begin(), moon_track.end());
             }
         }
+        uploaded_track_count_ = !generic_body_view && !track_vertices.empty() && snapshot && snapshot->tracks
+            ? snapshot->tracks->size()
+            : 0;
+        uploaded_track_catalog_generation_ = snapshot ? snapshot->catalog_generation : 0;
         scene_pass_->set_track_vertices(track_vertices);
         uploaded_track_source_ = track_source;
         track_buffer_dirty_ = false;
@@ -1286,6 +1296,8 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
             append_natural_satellite_markers(markers, camera_pov_, simulation_seconds);
         scene_pass_->set_markers(markers);
         uploaded_marker_generation_ = 0;
+        uploaded_marker_count_ = 0;
+        uploaded_marker_catalog_generation_ = 0;
         marker_buffer_dirty_ = false;
     }
     else if (snapshot)
@@ -1307,10 +1319,13 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
                 request.ground_observer_render_position = ground_context;
                 request.ground_horizon_occlusion = ground_horizon_occlusion_;
                 request.ground_marker_scale = ground_marker_scale_;
+                request.marker_scale = render_test_fixture_ ? render_test_fixture_->marker_scale : 1.0f;
                 composed = compose_satview_markers(request);
             }
             scene_pass_->set_markers(composed.markers);
             uploaded_marker_generation_ = snapshot->generation;
+            uploaded_marker_count_ = composed.markers.size();
+            uploaded_marker_catalog_generation_ = snapshot->catalog_generation;
             marker_buffer_dirty_ = false;
         }
     }
@@ -1318,6 +1333,8 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
     {
         scene_pass_->set_markers(std::span<const SatViewMarkerInstance>{});
         uploaded_marker_generation_ = 0;
+        uploaded_marker_count_ = 0;
+        uploaded_marker_catalog_generation_ = 0;
         marker_buffer_dirty_ = false;
     }
 
@@ -1380,6 +1397,7 @@ void SatViewRuntime::draw(SatViewFrameSink& frame)
             1.0);
     }
     scene_pass_->set_surface_markers(surface_markers);
+    update_render_test_fixture_readiness(snapshot);
 
     frame.record_scene(*scene_pass_, scene_viewport_.pixel_pos.x,
         scene_viewport_.pixel_pos.y, pixel_w, pixel_h);
@@ -1779,6 +1797,84 @@ void SatViewRuntime::set_imgui_font(const std::string& path, float size_pixels)
 void SatViewRuntime::on_font_metrics_changed()
 {
     refresh_scene_text_service();
+}
+
+bool SatViewRuntime::install_render_test_fixture(SatViewRenderTestFixture fixture)
+{
+    if (running_ || !std::isfinite(fixture.unix_seconds) || fixture.cache_directory.empty())
+        return false;
+    TestHooks hooks;
+    hooks.active = true;
+    hooks.clock = [seconds = fixture.unix_seconds]() { return seconds; };
+    hooks.catalog_fetch = [gp_json = fixture.gp_json, satcat_csv = fixture.satcat_csv](
+                              std::string_view url, std::string& error) {
+        error.clear();
+        return url.find("satcat") != std::string_view::npos ? satcat_csv : gp_json;
+    };
+    // No cloud transport: initialize() substitutes the offline stub, so the
+    // fixture never shows live or cached weather.
+    hooks.cache_directory = fixture.cache_directory.string();
+    test_hooks_ = std::move(hooks);
+    render_test_fixture_ = std::move(fixture);
+    render_test_fixture_ready_ = false;
+    return true;
+}
+
+bool SatViewRuntime::render_test_fixture_active() const
+{
+    return render_test_fixture_.has_value();
+}
+
+bool SatViewRuntime::render_test_fixture_ready() const
+{
+    return render_test_fixture_.has_value() && render_test_fixture_ready_;
+}
+
+void SatViewRuntime::apply_render_test_fixture_view()
+{
+    const SatViewRenderTestFixture& fixture = *render_test_fixture_;
+    // Look at the requested geographic point at the fixture epoch: rotate the
+    // Earth-fixed direction into TEME by the sidereal angle, then use the same
+    // TEME-to-render conversion as markers and tracks.
+    const double longitude = glm::radians(fixture.camera_longitude_degrees)
+        + greenwich_sidereal_angle_radians(fixture.unix_seconds);
+    const double latitude = glm::radians(fixture.camera_latitude_degrees);
+    const glm::dvec3 teme_direction(
+        std::cos(latitude) * std::cos(longitude),
+        std::cos(latitude) * std::sin(longitude),
+        std::sin(latitude));
+    const glm::vec3 direction = glm::normalize(
+        glm::vec3(teme_position_to_render_earth_radii(teme_direction)));
+    const SatViewMoonPosition moon = satview_moon_position(fixture.unix_seconds);
+    const SatViewSunPosition sun_position = satview_sun_position(fixture.unix_seconds);
+    const glm::vec3 target = camera_target_position(camera_pov_, moon, sun_position);
+    camera_->ClearMotion();
+    camera_->SetPositionAndFocalPoint(
+        target + direction * fixture.camera_distance_earth_radii, target);
+    map_center_radians_ = normalized_satview_map_center(
+        glm::radians(fixture.map_center_degrees));
+}
+
+void SatViewRuntime::update_render_test_fixture_readiness(const SatViewSimulationSnapshot* snapshot)
+{
+    if (!render_test_fixture_)
+        return;
+    const SatViewRenderTestFixture& fixture = *render_test_fixture_;
+    const SatViewCatalogService::Status status = catalog_service_.status();
+    const std::uint64_t generation = catalog_service_.catalog_generation();
+    const bool fixture_catalog = status.gp.data_source == SatViewCatalogService::DataSource::Live
+        && status.satcat.data_source == SatViewCatalogService::DataSource::Live
+        && generation != 0;
+    const bool fixture_snapshot = snapshot
+        && snapshot->paused
+        && snapshot->simulation_seconds == fixture.unix_seconds
+        && snapshot->catalog_generation == generation;
+    const bool markers_ready = uploaded_marker_catalog_generation_ == generation
+        && uploaded_marker_count_ >= fixture.required_markers;
+    const bool tracks_ready = fixture.required_tracks == 0
+        || (uploaded_track_catalog_generation_ == generation
+            && uploaded_track_count_ >= fixture.required_tracks);
+    render_test_fixture_ready_ = fixture_catalog && fixture_snapshot && markers_ready && tracks_ready;
 }
 
 double SatViewRuntime::now_unix_seconds() const
