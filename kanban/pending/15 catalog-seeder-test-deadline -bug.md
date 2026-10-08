@@ -3,7 +3,6 @@
 **Summary:** Give the cancellation test a reliable, isolated catalog seed so unrelated worker setup does not exhaust its fixed wait before cancellation is exercised.
 
 **Priority:** P2
-**Severity:** MEDIUM — validation reliability; no observed catalog data loss.
 **Source:** `tests/satview_network_transport_tests.cpp:83,175`
 
 ## Evidence (2026-10-02)

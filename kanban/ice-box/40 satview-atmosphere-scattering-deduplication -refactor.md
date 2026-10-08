@@ -2,6 +2,8 @@
 
 **Type:** refactor
 
+**Priority:** P3
+
 ## Gap
 
 SatView retains three similar atmosphere-scattering implementations. They differ in

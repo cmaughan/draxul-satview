@@ -2,6 +2,8 @@
 
 **Type:** feature
 
+**Priority:** P3
+
 - [ ] Add SatView-specific offline/refresh/proxy policy without logging credentials.
 - [ ] Expose source, cache age/size/path, last attempt/success, active source, and errors.
 - [ ] Add scoped Refresh and Clear Downloaded Data actions that preserve bundled assets

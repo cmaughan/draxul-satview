@@ -1,8 +1,7 @@
 # Reject non-finite satellite settings
 **Summary:** Reject invalid numeric settings so the satellite view keeps usable lighting and ground coordinates.
 
-**Priority:** 14  
-**Severity:** MEDIUM  
+**Priority:** P2  
 **Source:** `plugins/satview/src/runtime/satview_config_io.cpp`  
 **Reported by:** Claude M15; consensus F51.
 

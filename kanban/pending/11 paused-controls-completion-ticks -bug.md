@@ -2,8 +2,7 @@
 
 **Summary:** Keep paused satellite panes processing controls and completed downloads so changes can appear without resuming time.
 
-**Priority:** 11  
-**Severity:** HIGH  
+**Priority:** P1  
 **Source:** `plugins/satview/src/satview_plugin.cpp`
 
 **Evidence and trigger:** B20; paused ticks remove their deadline, while worker completion and redraw-only input do not schedule another pump.
