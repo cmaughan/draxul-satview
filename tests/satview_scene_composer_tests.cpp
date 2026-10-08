@@ -1,19 +1,25 @@
 #include <catch2/catch_test_macros.hpp>
+#include <draxul/satview/satview_ground_view.h>
+#include <draxul/satview/satview_map_projection.h>
 #include <draxul/satview/satview_scene_composer.h>
+
+#include <array>
+#include <cmath>
+#include <numbers>
 
 using namespace draxul::satview;
 
 namespace
 {
 
-SatellitePropagatedState state_at(std::int64_t id, glm::dvec3 earth_radii)
+SatellitePropagatedState state_at(std::int64_t id, glm::dvec3 teme_earth_radii)
 {
     SatellitePropagatedState state;
     state.norad_catalog_id = id;
     state.population = SatellitePopulation::ActivePayload;
     state.object_kind = SatelliteObjectKind::Payload;
     state.orbit_class = OrbitClass::LowEarth;
-    state.teme_position_km = earth_radii * kSatViewEarthEquatorialRadiusKm;
+    state.teme_position_km = teme_earth_radii * kSatViewEarthEquatorialRadiusKm;
     return state;
 }
 
@@ -38,9 +44,9 @@ SatelliteOrbitTrack track_at(
 TEST_CASE("SatView scene composer applies horizon visibility before marker limits", "[satview][scene][composer]")
 {
     const std::vector states = {
-        state_at(1, { -2.0, 0.0, 0.0 }),
-        state_at(2, { 2.0, 0.0, 0.0 }),
-        state_at(3, { 2.0, 0.1, 0.0 }),
+        state_at(1, { 0.0, 1.1, 0.0 }),
+        state_at(2, { 0.0, -1.1, 0.0 }),
+        state_at(3, { 0.0, -1.1, 0.1 }),
     };
     SatViewFilterState filter;
     SatViewMarkerComposeRequest request;
@@ -56,6 +62,10 @@ TEST_CASE("SatView scene composer applies horizon visibility before marker limit
     CHECK(result.visible_eligible_count == 2);
     REQUIRE(result.markers.size() == 1);
     CHECK(result.markers.front().position0_size.x > 0.0f);
+    const float expected_size = satview_ground_marker_base_size(
+        glm::dvec3(1.1, 0.0, 0.0), *request.ground_observer_render_position)
+        * request.ground_marker_scale;
+    CHECK(std::abs(result.markers.front().position0_size.w - expected_size) < 1.0e-6f);
 }
 
 TEST_CASE("SatView scene composer preserves selected markers beyond filters and limits", "[satview][scene][composer]")
@@ -80,7 +90,102 @@ TEST_CASE("SatView scene composer preserves selected markers beyond filters and 
     const auto result = compose_satview_markers(request);
     REQUIRE(result.markers.size() == 1);
     CHECK(result.markers.front().position1_selected.w == 1.0f);
-    CHECK(result.markers.front().position1_selected.x > result.markers.front().position0_size.x);
+    CHECK(result.markers.front().position1_selected.z < result.markers.front().position0_size.z);
+}
+
+TEST_CASE("SatView composed markers match cardinal axes tracks and interpolated picking", "[satview][scene][composer][coordinates]")
+{
+    struct AxisCase
+    {
+        glm::dvec3 teme;
+        glm::dvec3 rendered;
+    };
+    const std::array cases = {
+        AxisCase{ { 2.0, 0.0, 0.0 }, { 0.0, 0.0, -2.0 } },
+        AxisCase{ { -2.0, 0.0, 0.0 }, { 0.0, 0.0, 2.0 } },
+        AxisCase{ { 0.0, 2.0, 0.0 }, { -2.0, 0.0, 0.0 } },
+        AxisCase{ { 0.0, -2.0, 0.0 }, { 2.0, 0.0, 0.0 } },
+        AxisCase{ { 0.0, 0.0, 2.0 }, { 0.0, 2.0, 0.0 } },
+        AxisCase{ { 0.0, 0.0, -2.0 }, { 0.0, -2.0, 0.0 } },
+        AxisCase{ { 2.0, 3.0, 4.0 }, { -3.0, 4.0, -2.0 } },
+    };
+    SatViewFilterState filter;
+    for (const auto& axes : cases)
+    {
+        INFO("TEME " << axes.teme.x << ", " << axes.teme.y << ", " << axes.teme.z);
+        const std::vector states = { state_at(1, axes.teme) };
+        const std::vector next_positions = {
+            (axes.teme + glm::dvec3(0.3, -0.4, 0.5)) * kSatViewEarthEquatorialRadiusKm,
+        };
+        const glm::dvec3 expected_next = axes.rendered + glm::dvec3(0.4, 0.5, -0.3);
+        SatViewMarkerComposeRequest request;
+        request.states = states;
+        request.next_teme_positions_km = next_positions;
+        request.filter = &filter;
+        const auto result = compose_satview_markers(request);
+        REQUIRE(result.markers.size() == 1);
+        const auto& marker = result.markers.front();
+        CHECK(glm::length(glm::dvec3(marker.position0_size) - axes.rendered) < 1.0e-6);
+        CHECK(glm::length(glm::dvec3(marker.position1_selected) - expected_next) < 1.0e-6);
+
+        const std::vector tracks = {
+            track_at(1, { axes.rendered, expected_next }, OrbitSolutionKind::SampledEphemeris),
+        };
+        SatViewTrackComposeRequest track_request;
+        track_request.tracks = tracks;
+        track_request.filter = &filter;
+        const auto vertices = compose_satview_tracks(track_request);
+        REQUIRE(vertices.size() == 2);
+        CHECK(glm::length(glm::vec3(vertices[0].position) - glm::vec3(marker.position0_size)) < 1.0e-6f);
+        CHECK(glm::length(glm::vec3(vertices[1].position) - glm::vec3(marker.position1_selected)) < 1.0e-6f);
+
+        for (const double alpha : { 0.0, 0.35, 1.0 })
+        {
+            const auto drawn = glm::mix(glm::dvec3(marker.position0_size), glm::dvec3(marker.position1_selected), alpha);
+            const auto picked = teme_position_to_render_earth_radii(
+                glm::mix(states.front().teme_position_km, next_positions.front(), alpha));
+            CHECK(glm::length(drawn - picked) < 1.0e-6);
+        }
+        request.next_teme_positions_km = {};
+        const auto stationary = compose_satview_markers(request);
+        REQUIRE(stationary.markers.size() == 1);
+        CHECK(glm::length(glm::vec3(stationary.markers.front().position1_selected) - glm::vec3(marker.position0_size)) < 1.0e-6f);
+    }
+}
+
+TEST_CASE("SatView composed markers retain geographic map positions", "[satview][scene][composer][coordinates][map]")
+{
+    constexpr double timestamp = 946728000.0;
+    constexpr double radians = std::numbers::pi_v<double> / 180.0;
+    const double sidereal = greenwich_sidereal_angle_radians(timestamp);
+    SatViewFilterState filter;
+    for (const auto longitude_latitude : {
+             glm::dvec2(0.0, 0.0), glm::dvec2(90.0, 0.0), glm::dvec2(-90.0, 45.0),
+             glm::dvec2(120.0, -60.0), glm::dvec2(45.0, 80.0) })
+    {
+        const double longitude = longitude_latitude.x * radians;
+        const double latitude = longitude_latitude.y * radians;
+        const glm::dvec3 teme = 2.0 * glm::dvec3(
+            std::cos(latitude) * std::cos(longitude + sidereal),
+            std::cos(latitude) * std::sin(longitude + sidereal), std::sin(latitude));
+        const std::vector states = { state_at(1, teme) };
+        SatViewMarkerComposeRequest request;
+        request.states = states;
+        request.filter = &filter;
+        const auto result = compose_satview_markers(request);
+        REQUIRE(result.markers.size() == 1);
+        const glm::dvec3 rendered(result.markers.front().position0_size);
+        const auto geographic = satview_ground_location_from_render_position(rendered, timestamp);
+        CHECK(std::abs(std::remainder(geographic.longitude_radians - longitude, 2.0 * std::numbers::pi_v<double>)) < 1.0e-6);
+        CHECK(std::abs(geographic.latitude_radians - latitude) < 1.0e-6);
+        const glm::dvec3 shader_teme(-rendered.z, -rendered.x, rendered.y);
+        for (const auto center : { glm::vec2(0.0f), glm::vec2(0.7f, -0.2f) })
+        {
+            const auto drawn = satview_map_position_from_teme(shader_teme * kSatViewEarthEquatorialRadiusKm, timestamp, center);
+            const auto picked = satview_map_position_from_teme(states.front().teme_position_km, timestamp, center);
+            CHECK(glm::length(drawn - picked) < 1.0e-6f);
+        }
+    }
 }
 
 TEST_CASE("SatView drawing and picking share marker eligibility ordering", "[satview][scene][composer]")

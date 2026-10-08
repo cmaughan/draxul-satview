@@ -9,6 +9,10 @@ Read the repository-root `CLAUDE.md` before changing this product.
 - `draxul-satview-scene` owns backend-neutral scene composition. Immutable
   composer requests produce generation-tagged scene records; they do not own
   workers, services, ImGui, SDL, or GPU resources.
+  Satellite inputs are TEME kilometres; marker output uses Y-up render Earth
+  radii. Convert both interpolation endpoints with
+  `teme_position_to_render_earth_radii()` (`x,y,z` to `-y,z,-x`), not radius-only
+  scaling. Ground visibility, tracks, drawing and picking must share that frame.
 - `draxul-satview-services` owns catalog/cloud worker lifetime and cache
   publication. A worker remains in flight until the main thread joins it and
   consumes its result.

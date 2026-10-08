@@ -180,7 +180,7 @@ SatViewMarkerComposeResult compose_satview_markers(const SatViewMarkerComposeReq
             *request.filter,
             make_satview_filter_candidate(state, request.source_label));
         const glm::vec3 position0 = to_vec3(
-            state.teme_position_km / kSatViewEarthEquatorialRadiusKm);
+            teme_position_to_render_earth_radii(state.teme_position_km));
         const bool above_horizon = !request.ground_horizon_occlusion
             || !request.ground_observer_render_position.has_value()
             || satview_ground_visibility_dot(
@@ -201,7 +201,7 @@ SatViewMarkerComposeResult compose_satview_markers(const SatViewMarkerComposeReq
             ? request.next_teme_positions_km[state_index]
             : state.teme_position_km;
         const glm::vec3 position1 = to_vec3(
-            next_position / kSatViewEarthEquatorialRadiusKm);
+            teme_position_to_render_earth_radii(next_position));
         const float range = glm::length(position0);
         const float base_size = request.ground_observer_render_position.has_value()
             ? satview_ground_marker_base_size(
