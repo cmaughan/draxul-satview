@@ -118,7 +118,25 @@ struct SatViewScenePass::State
     int uploaded_context_body = -1;
     NSUInteger scene_sample_count = 1;
     std::vector<HdrTargets> hdr_targets;
+    // The frame's ImGui draw data is built before record_prepass and names
+    // target textures without retaining them. Keep replaced targets alive
+    // until this pass has prepared buffered_frame_count more frames.
+    struct RetiredHdrTargets
+    {
+        std::vector<HdrTargets> targets;
+        uint32_t prepasses_remaining = 0;
+    };
+    std::vector<RetiredHdrTargets> retired_hdr_targets;
     uint32_t last_prepass_frame = 0;
+
+    void age_retired_hdr_targets()
+    {
+        for (auto& retired : retired_hdr_targets)
+            --retired.prepasses_remaining;
+        std::erase_if(retired_hdr_targets, [](const RetiredHdrTargets& retired) {
+            return retired.prepasses_remaining == 0;
+        });
+    }
 
     id<MTLTexture> create_texture(
         id<MTLDevice> metal_device,
@@ -329,6 +347,7 @@ struct SatViewScenePass::State
         label_sampler.reset();
         hdr_sampler.reset();
         hdr_targets.clear();
+        retired_hdr_targets.clear();
         frame_streams.clear();
         uploaded_label_atlas_revision = 0;
         uploaded_cloud_revision = 0;
@@ -865,6 +884,8 @@ struct SatViewScenePass::State
             && hdr_targets.front().width == width && hdr_targets.front().height == height)
             return true;
 
+        if (!hdr_targets.empty())
+            retired_hdr_targets.push_back({ std::move(hdr_targets), frame_count });
         hdr_targets.clear();
         hdr_targets.resize(frame_count);
         const bool multisampled = scene_sample_count > 1;
@@ -1006,6 +1027,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
         return;
     const int width = std::max(1, ctx.viewport_w());
     const int height = std::max(1, ctx.viewport_h());
+    state_->age_retired_hdr_targets();
     if (!state_->ensure_hdr_targets(
             metal_ctx->device(), ctx.buffered_frame_count(), width, height))
         return;

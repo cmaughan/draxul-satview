@@ -248,6 +248,19 @@ struct SatViewScenePass::State
     VkSampler hdr_sampler = VK_NULL_HANDLE;
     VkSampleCountFlagBits scene_sample_count = VK_SAMPLE_COUNT_1_BIT;
     std::vector<HdrTargets> hdr_targets;
+    // The frame's ImGui draw data is built before record_prepass, so a resize
+    // can replace targets whose diagnostic descriptors it already references.
+    // Keep replaced sets until this pass has prepared buffered_frame_count
+    // more frames; by then the host has waited for that frame's slot.
+    struct RetiredHdrTargetSet
+    {
+        HdrTargetSet set;
+        // Set when a pipeline rebuild retires the sampler the set's
+        // diagnostic descriptors reference; destroyed after the set.
+        VkSampler sampler = VK_NULL_HANDLE;
+        uint32_t prepasses_remaining = 0;
+    };
+    std::vector<RetiredHdrTargetSet> retired_hdr_targets;
     uint32_t last_prepass_frame = 0;
     std::array<TextureResource, kEarthTextureCount> earth_textures{};
     TextureResource moon_texture;
@@ -408,6 +421,47 @@ struct SatViewScenePass::State
         destroy_hdr_target_set(hdr_targets, hdr_descriptor_pool);
     }
 
+    void destroy_retired_hdr_target_set(RetiredHdrTargetSet& retired)
+    {
+        destroy_hdr_target_set(retired.set.targets, retired.set.descriptor_pool);
+        if (retired.sampler != VK_NULL_HANDLE && device != VK_NULL_HANDLE)
+            vkDestroySampler(device, retired.sampler, nullptr);
+        retired.sampler = VK_NULL_HANDLE;
+    }
+
+    void destroy_retired_hdr_targets()
+    {
+        for (auto& retired : retired_hdr_targets)
+            destroy_retired_hdr_target_set(retired);
+        retired_hdr_targets.clear();
+    }
+
+    void retire_hdr_targets(uint32_t prepasses, VkSampler sampler = VK_NULL_HANDLE)
+    {
+        if (hdr_targets.empty() && hdr_descriptor_pool == VK_NULL_HANDLE
+            && sampler == VK_NULL_HANDLE)
+            return;
+        RetiredHdrTargetSet retired;
+        retired.set.descriptor_pool = std::exchange(hdr_descriptor_pool, VK_NULL_HANDLE);
+        retired.set.targets = std::move(hdr_targets);
+        retired.sampler = sampler;
+        retired.prepasses_remaining = std::max(1u, prepasses);
+        hdr_targets.clear();
+        retired_hdr_targets.push_back(std::move(retired));
+    }
+
+    void age_retired_hdr_targets()
+    {
+        for (auto& retired : retired_hdr_targets)
+        {
+            if (--retired.prepasses_remaining == 0)
+                destroy_retired_hdr_target_set(retired);
+        }
+        std::erase_if(retired_hdr_targets, [](const RetiredHdrTargetSet& retired) {
+            return retired.prepasses_remaining == 0;
+        });
+    }
+
     void destroy_hdr_resources()
     {
         destroy_hdr_targets();
@@ -454,6 +508,7 @@ struct SatViewScenePass::State
         if (device != VK_NULL_HANDLE)
         {
             destroy_pipelines();
+            destroy_retired_hdr_targets();
             destroy_hdr_resources();
             if (layout != VK_NULL_HANDLE)
                 vkDestroyPipelineLayout(device, layout, nullptr);
@@ -1043,6 +1098,9 @@ struct SatViewScenePass::State
             return false;
         vkDeviceWaitIdle(device);
         destroy_pipelines();
+        // This frame's ImGui draw data may already name the diagnostic
+        // descriptors, which reference the targets and the HDR sampler.
+        retire_hdr_targets(ctx.buffered_frame_count(), std::exchange(hdr_sampler, VK_NULL_HANDLE));
         destroy_hdr_resources();
         main_render_pass = ctx.render_pass();
         if (!create_hdr_render_passes(ctx.physical_device()) || !create_hdr_layouts())
@@ -1198,7 +1256,7 @@ struct SatViewScenePass::State
                 destroy_hdr_target_set(candidate.targets, candidate.descriptor_pool);
             },
             [&](HdrTargetSet&& candidate) {
-                destroy_hdr_targets();
+                retire_hdr_targets(frame_count);
                 hdr_descriptor_pool = candidate.descriptor_pool;
                 candidate.descriptor_pool = VK_NULL_HANDLE;
                 hdr_targets = std::move(candidate.targets);
@@ -1801,6 +1859,7 @@ void SatViewScenePass::record_prepass(IRenderContext& ctx)
     auto* vk_ctx = static_cast<VkRenderContext*>(&ctx);
     const int width = std::max(1, ctx.viewport_w());
     const int height = std::max(1, ctx.viewport_h());
+    state_->age_retired_hdr_targets();
     if (!state_->ensure_texture_descriptors(*vk_ctx)
         || !state_->ensure_hdr_setup(*vk_ctx)
         || !state_->ensure_hdr_targets(vk_ctx->buffered_frame_count(), width, height))
