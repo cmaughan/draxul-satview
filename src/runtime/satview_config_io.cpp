@@ -48,10 +48,16 @@ std::size_t clamped_size(const toml::table& table, std::string_view key, std::si
     return static_cast<std::size_t>(std::clamp<std::uint64_t>(value, minimum, maximum));
 }
 
+std::optional<double> finite_double(const toml::table& table, std::string_view key)
+{
+    const auto value = toml_support::get_double(table, key);
+    return value && std::isfinite(*value) ? value : std::nullopt;
+}
+
 float clamped_float(const toml::table& table, std::string_view key, float fallback,
     float minimum, float maximum)
 {
-    if (auto value = toml_support::get_double(table, key))
+    if (auto value = finite_double(table, key))
         return static_cast<float>(std::clamp(*value,
             static_cast<double>(minimum),
             static_cast<double>(maximum)));
@@ -214,7 +220,7 @@ void apply_satview_table(SatViewConfig& config, const toml::table& table)
     config.tone_map_white_point = clamped_float(table, "tone_map_white_point",
         config.tone_map_white_point, kMinimumToneMapWhitePoint, kMaximumToneMapWhitePoint);
 
-    if (auto value = toml_support::get_double(table, "time_speed"))
+    if (auto value = finite_double(table, "time_speed"))
         config.time_speed = static_cast<float>(std::clamp(*value, 1.0, 3600.0));
     else if (auto value = toml_support::get_int(table, "time_speed"))
         config.time_speed = static_cast<float>(std::clamp<std::int64_t>(*value, 1, 3600));
@@ -226,16 +232,16 @@ void apply_satview_table(SatViewConfig& config, const toml::table& table)
             config.ground_fov_degrees,
             20.0f,
             satview_maximum_ground_fov_degrees(config.ground_projection)));
-    if (auto value = toml_support::get_double(table, "ground_marker_scale"))
+    if (auto value = finite_double(table, "ground_marker_scale"))
         config.ground_marker_scale = static_cast<float>(std::clamp(*value, 0.05, 2.0));
     else if (auto value = toml_support::get_int(table, "ground_marker_scale"))
         config.ground_marker_scale = static_cast<float>(
             std::clamp(static_cast<double>(*value), 0.05, 2.0));
-    if (auto value = toml_support::get_double(table, "ground_longitude_radians"))
+    if (auto value = finite_double(table, "ground_longitude_radians"))
         config.ground_longitude_radians = std::remainder(*value, 2.0 * kPi);
     else if (auto value = toml_support::get_int(table, "ground_longitude_radians"))
         config.ground_longitude_radians = std::remainder(static_cast<double>(*value), 2.0 * kPi);
-    if (auto value = toml_support::get_double(table, "ground_latitude_radians"))
+    if (auto value = finite_double(table, "ground_latitude_radians"))
         config.ground_latitude_radians = std::clamp(*value, -kLatitudeLimitRadians, kLatitudeLimitRadians);
     else if (auto value = toml_support::get_int(table, "ground_latitude_radians"))
         config.ground_latitude_radians = std::clamp(static_cast<double>(*value), -kLatitudeLimitRadians, kLatitudeLimitRadians);
@@ -344,7 +350,7 @@ void apply_satview_table(SatViewConfig& config, const toml::table& table)
         config.filter.object_type_text = truncate(std::move(*value), kMaximumObjectTypeLength);
     if (auto value = toml_support::get_string(table, "source"))
         config.filter.source_text = truncate(std::move(*value), kMaximumSourceLength);
-    if (auto value = toml_support::get_double(table, "max_epoch_age_days"))
+    if (auto value = finite_double(table, "max_epoch_age_days"))
         config.filter.max_epoch_age_days = std::clamp(*value, 0.0, 30.0);
     else if (auto value = toml_support::get_int(table, "max_epoch_age_days"))
         config.filter.max_epoch_age_days = static_cast<double>(std::clamp<std::int64_t>(*value, 0, 30));

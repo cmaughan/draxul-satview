@@ -1961,9 +1961,33 @@ SatViewConfig SatViewRuntime::current_config() const
     return config;
 }
 
-void SatViewRuntime::apply_config(const SatViewConfig& config)
+void SatViewRuntime::apply_config(const SatViewConfig& incoming)
 {
+    SatViewConfig config = incoming;
+    const SatViewConfig previous = current_config();
+    // Direct runtime callers bypass TOML parsing. Reject each non-finite field
+    // before any clamp, wrap, simulation publication, or scene calculation.
+    const auto retain_finite = [](auto& value, auto fallback) {
+        if (!std::isfinite(value))
+            value = fallback;
+    };
+    retain_finite(config.star_min_magnitude, previous.star_min_magnitude);
+    retain_finite(config.star_max_magnitude, previous.star_max_magnitude);
+    retain_finite(config.star_brightness_scale, previous.star_brightness_scale);
+    retain_finite(config.constellation_figure_width, previous.constellation_figure_width);
+    retain_finite(config.constellation_boundary_width, previous.constellation_boundary_width);
+    retain_finite(config.milky_way_brightness, previous.milky_way_brightness);
+    retain_finite(config.tone_map_exposure, previous.tone_map_exposure);
+    retain_finite(config.tone_map_white_point, previous.tone_map_white_point);
+    retain_finite(config.time_speed, previous.time_speed);
+    retain_finite(config.ground_fov_degrees, previous.ground_fov_degrees);
+    retain_finite(config.ground_marker_scale, previous.ground_marker_scale);
+    retain_finite(config.ground_longitude_radians, previous.ground_longitude_radians);
+    retain_finite(config.ground_latitude_radians, previous.ground_latitude_radians);
+    retain_finite(config.filter.max_epoch_age_days, previous.filter.max_epoch_age_days);
+
     filter_ = config.filter;
+    filter_.max_epoch_age_days = std::clamp(filter_.max_epoch_age_days, 0.0, 30.0);
     color_mode_ = config.color_mode;
     track_display_mode_ = config.track_display_mode;
     satellite_display_mode_ = config.satellite_display_mode;
@@ -2025,7 +2049,7 @@ void SatViewRuntime::apply_config(const SatViewConfig& config)
         kMinimumToneMapWhitePoint,
         kMaximumToneMapWhitePoint);
     show_hdr_debug_panel_ = config.show_hdr_debug_panel;
-    time_speed_ = config.time_speed;
+    time_speed_ = std::clamp(config.time_speed, 1.0f, 3600.0f);
     clouds_enabled_ = config.clouds_enabled;
     realistic_clouds_enabled_ = config.realistic_clouds_enabled;
     atmosphere_enabled_ = config.atmosphere_enabled;
@@ -2051,8 +2075,10 @@ void SatViewRuntime::apply_config(const SatViewConfig& config)
     observatory_horizon_enabled_ = config.observatory_horizon_enabled;
     cardinal_labels_enabled_ = config.cardinal_labels_enabled;
     ground_location_radians_ = glm::dvec2(
-        config.ground_longitude_radians,
-        config.ground_latitude_radians);
+        std::remainder(config.ground_longitude_radians, 2.0 * std::numbers::pi_v<double>),
+        std::clamp(config.ground_latitude_radians,
+            -0.5 * std::numbers::pi_v<double> + 0.001,
+            0.5 * std::numbers::pi_v<double> - 0.001));
     copy_to_buffer(search_buffer_, filter_.search_text);
     copy_to_buffer(object_type_buffer_, filter_.object_type_text);
     copy_to_buffer(source_buffer_, filter_.source_text);

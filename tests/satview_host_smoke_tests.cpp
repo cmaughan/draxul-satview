@@ -28,6 +28,7 @@
 
 
 #include <cstring>
+#include <limits>
 
 using namespace draxul;
 using namespace draxul::satview;
@@ -466,4 +467,47 @@ TEST_CASE("SatView host dirty flags settle after a change", "[satview][host][smo
     // A single pump consumes the dirty flag; it does not stay dirty forever.
     offline.host.pump();
     CHECK_FALSE(SatViewHostTestAccess::simulation_settings_dirty(offline.host));
+}
+
+TEST_CASE("SatView direct runtime settings retain finite previous values", "[satview][host][config]")
+{
+    SatViewHost host;
+    SatViewConfig valid;
+    valid.time_speed = 123.0f;
+    valid.tone_map_exposure = 2.0f;
+    valid.ground_longitude_radians = 1.0;
+    SatViewHostTestAccess::apply_config(host, valid);
+    const SatViewConfig previous = SatViewHostTestAccess::current_config(host);
+    for (const double invalid : { std::numeric_limits<double>::quiet_NaN(),
+             std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() })
+    {
+        SatViewConfig config = valid;
+        config.star_min_magnitude = invalid;
+        config.star_max_magnitude = invalid;
+        config.star_brightness_scale = invalid;
+        config.constellation_figure_width = invalid;
+        config.constellation_boundary_width = invalid;
+        config.milky_way_brightness = invalid;
+        config.tone_map_exposure = invalid;
+        config.tone_map_white_point = invalid;
+        config.time_speed = invalid;
+        config.ground_fov_degrees = invalid;
+        config.ground_marker_scale = invalid;
+        config.ground_longitude_radians = invalid;
+        config.ground_latitude_radians = invalid;
+        config.filter.max_epoch_age_days = invalid;
+        SatViewHostTestAccess::apply_config(host, config);
+        CHECK(SatViewHostTestAccess::current_config(host) == previous);
+    }
+    valid.time_speed = 9000.0f;
+    valid.ground_longitude_radians = 9.0;
+    valid.ground_latitude_radians = 3.0;
+    valid.filter.max_epoch_age_days = 45.0;
+    SatViewHostTestAccess::apply_config(host, valid);
+    const auto bounded = SatViewHostTestAccess::current_config(host);
+    CHECK(bounded.time_speed == 3600.0f);
+    CHECK(bounded.ground_longitude_radians >= -3.142);
+    CHECK(bounded.ground_longitude_radians <= 3.142);
+    CHECK(bounded.ground_latitude_radians < 1.571);
+    CHECK(bounded.filter.max_epoch_age_days == 30.0);
 }

@@ -2,6 +2,8 @@
 #include <draxul/config_document.h>
 #include <draxul/satview/satview_config.h>
 #include <numbers>
+#include <array>
+#include <limits>
 
 using namespace draxul;
 using namespace draxul::satview;
@@ -248,4 +250,39 @@ TEST_CASE("SatView perspective ground projection keeps its narrower field of vie
 
     CHECK(config.ground_projection == SatViewGroundProjection::Perspective);
     CHECK(config.ground_fov_degrees == 120.0f);
+}
+
+TEST_CASE("SatView saved and launch settings reject non-finite numbers", "[satview][config]")
+{
+    for (const double invalid : { std::numeric_limits<double>::quiet_NaN(),
+             std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity() })
+    {
+        ConfigDocument document;
+        auto& table = document.ensure_table("satview");
+        for (const char* key : { "star_min_magnitude", "star_max_magnitude", "star_brightness",
+                 "constellation_figure_width", "constellation_boundary_width", "milky_way_brightness",
+                 "tone_map_exposure", "tone_map_white_point", "time_speed", "ground_fov_degrees",
+                 "ground_marker_scale", "ground_longitude_radians", "ground_latitude_radians",
+                 "max_epoch_age_days" })
+            table.insert_or_assign(key, invalid);
+        CHECK(load_satview_config(document) == SatViewConfig{});
+        SatViewConfig launch;
+        launch.star_min_magnitude = invalid;
+        launch.star_max_magnitude = invalid;
+        launch.star_brightness_scale = invalid;
+        launch.constellation_figure_width = invalid;
+        launch.constellation_boundary_width = invalid;
+        launch.milky_way_brightness = invalid;
+        launch.tone_map_exposure = invalid;
+        launch.tone_map_white_point = invalid;
+        launch.time_speed = invalid;
+        launch.ground_fov_degrees = invalid;
+        launch.ground_marker_scale = invalid;
+        launch.ground_longitude_radians = invalid;
+        launch.ground_latitude_radians = invalid;
+        launch.filter.max_epoch_age_days = invalid;
+        const auto parsed = parse_satview_config_toml(serialize_satview_config_toml(launch));
+        REQUIRE(parsed);
+        CHECK(*parsed == SatViewConfig{});
+    }
 }
