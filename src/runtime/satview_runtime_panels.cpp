@@ -621,9 +621,8 @@ void SatViewRuntime::render_dockspace(bool keep_alive_only)
         | ImGuiWindowFlags_NoBackground;
     if (keep_alive_only)
         root_flags |= ImGuiWindowFlags_NoInputs;
-    const ImVec2 pane_position(
-        static_cast<float>(viewport_.pixel_pos.x),
-        static_cast<float>(viewport_.pixel_pos.y));
+    // ImGui coordinates are pane-local (PluginImGuiContext::begin_frame).
+    const ImVec2 pane_position(0.0f, 0.0f);
     const ImVec2 pane_size(
         static_cast<float>(std::max(viewport_.pixel_size.x, 1)),
         static_cast<float>(std::max(viewport_.pixel_size.y, 1)));
@@ -679,7 +678,12 @@ void SatViewRuntime::render_scene_panel()
     ImGui::PopStyleVar();
     if (visible)
     {
-        const ImVec2 content_position = ImGui::GetCursorScreenPos();
+        // ImGui reports pane-local positions; the scene viewport is in
+        // window pixels, so add the pane origin back.
+        const ImVec2 local_position = ImGui::GetCursorScreenPos();
+        const ImVec2 content_position(
+            local_position.x + static_cast<float>(viewport_.pixel_pos.x),
+            local_position.y + static_cast<float>(viewport_.pixel_pos.y));
         const ImVec2 content_size = ImGui::GetContentRegionAvail();
         const int pane_left = viewport_.pixel_pos.x;
         const int pane_top = viewport_.pixel_pos.y;
@@ -987,9 +991,13 @@ void SatViewRuntime::render_control_panel(const SatViewSimulationSnapshot* snaps
         const bool pause_clicked = ImGui::Button(paused_ ? "Resume" : "Pause");
         if (test_hooks_.active)
         {
+            // Reported in window pixels, like the pointer events tests send.
+            const ImVec2 origin(static_cast<float>(viewport_.pixel_pos.x),
+                static_cast<float>(viewport_.pixel_pos.y));
             const ImVec2 min = ImGui::GetItemRectMin();
             const ImVec2 max = ImGui::GetItemRectMax();
-            test_hooks_.pause_button_bounds = { min.x, min.y, max.x, max.y };
+            test_hooks_.pause_button_bounds = { min.x + origin.x, min.y + origin.y,
+                max.x + origin.x, max.y + origin.y };
             test_hooks_.pause_button_rect_ready = true;
         }
         if (pause_clicked)

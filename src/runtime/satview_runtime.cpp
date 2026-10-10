@@ -1419,7 +1419,7 @@ void SatViewRuntime::on_mouse_button(const MouseButtonEvent& event)
 {
     if (imgui_.context())
     {
-        plugin_support::ImGuiInputBridge::route_mouse_button(imgui_.context(), event);
+        plugin_support::ImGuiInputBridge::route_mouse_button(imgui_, event);
 
         const bool scene_input = dragging_
             || imgui_mouse_targets_scene(scene_viewport_, event.pos);
@@ -1489,7 +1489,7 @@ void SatViewRuntime::on_mouse_move(const MouseMoveEvent& event)
 {
     if (imgui_.context())
     {
-        plugin_support::ImGuiInputBridge::route_mouse_move(imgui_.context(), event);
+        plugin_support::ImGuiInputBridge::route_mouse_move(imgui_, event);
         const bool scene_input = dragging_
             || imgui_mouse_targets_scene(scene_viewport_, event.pos);
         if (!scene_input)

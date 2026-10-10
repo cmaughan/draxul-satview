@@ -304,6 +304,9 @@ struct OfflineSatViewHost
     std::atomic<int> catalog_fetch_calls{ 0 };
     std::atomic<int> cloud_fetch_calls{ 0 };
     double clock_seconds = kSatViewFixtureClockSeconds;
+    // Window-pixel origin of the pane; non-zero exercises the conversion
+    // between pane-local ImGui coordinates and window-pixel pointer events.
+    glm::ivec2 pane_origin{ 0, 0 };
 
     // Initialize the host with offline hooks. When attach_imgui is true the
     // FakeTermRenderer is also attached as the ImGui backend so draw() records
@@ -332,6 +335,7 @@ struct OfflineSatViewHost
         PluginRuntimeLaunchOptions launch;
 
         PluginRuntimeViewport viewport;
+        viewport.pixel_pos = pane_origin;
         viewport.pixel_size = { 800, 600 };
         viewport.grid_size = { 1, 1 };
 

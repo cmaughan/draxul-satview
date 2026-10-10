@@ -413,6 +413,9 @@ TEST_CASE("SatView View panel Pause and Resume publish one persisted presentatio
     "[satview][host][panel][pause]")
 {
     OfflineSatViewHost offline;
+    // A pane away from the window corner: the click arrives in window pixels
+    // and must reach ImGui's pane-local button.
+    offline.pane_origin = { 320, 48 };
     REQUIRE(offline.initialize());
     offline.draw_once();
     ImGui::SetWindowFocus("View");
